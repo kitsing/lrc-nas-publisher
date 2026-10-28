@@ -72,11 +72,14 @@ running on the NAS (see `../container/README.md`).
   JPEG. Moving it out of the RAW folder removes its JPEG. Renaming a virtual copy renames its JPEG.
 - Removing a published photo from the catalog: Lightroom asks whether to delete it from the
   service too.
+- HDR edits are published as SDR JPEGs unless you turn on **HDR Output** (and **Maximize
+  Compatibility**) under File Settings in the service settings. That writes JPEGs with an HDR gain
+  map: HDR-capable viewers show HDR, others the SDR image. Changing it republishes every photo.
 
 ## Development
 
 The plugin is plain Lua 5.1. `tests/run_harness.sh` runs it on a fake Lightroom SDK
-(`tests/fake_lrsdk.lua`) against the real container in Docker: 21 scenarios covering settling,
+(`tests/fake_lrsdk.lua`) against the real container in Docker: 22 scenarios covering settling,
 republishing, removals, the NAS going away, wrong settings, smart-preview renders, sidecar
 imports, Unicode paths, and plugin reloads (including one mid-publish). The fake follows the documented SDK behavior; where the
 real SDK surprised us (`exportSession:photosToExport()` returns an iterator), the fake was fixed

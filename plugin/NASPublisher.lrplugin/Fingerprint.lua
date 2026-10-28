@@ -27,6 +27,10 @@ local EXPORT_KEYS = {
 	'LR_size_longEdge', 'LR_size_shortEdge',
 }
 
+-- HDR output (File Settings > HDR Output, Maximize Compatibility). Counted only when on, so the
+-- fingerprints of SDR exports stay what they were before these keys were added.
+local HDR_KEYS = { 'LR_enableHDRDisplay', 'LR_maximumCompatibility' }
+
 -- Metadata embedded in the JPEG (everything metadataThatTriggersRepublish asks for).
 local META_KEYS = {
 	'title', 'caption', 'keywordTagsForExport', 'copyright', 'copyrightState', 'rightsUsageTerms',
@@ -96,6 +100,9 @@ end
 function Fingerprint.forPhoto(photo, rel, variant, exportSettings)
 	local export = {}
 	for _, k in ipairs(EXPORT_KEYS) do export[k] = exportSettings[k] end
+	if exportSettings.LR_enableHDRDisplay then
+		for _, k in ipairs(HDR_KEYS) do export[k] = exportSettings[k] end
+	end
 	-- LrTasks.pcall: these getters may yield, which a plain pcall can't survive.
 	local meta = {}
 	for _, k in ipairs(META_KEYS) do

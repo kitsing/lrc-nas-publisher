@@ -724,6 +724,22 @@ scenario('20', 'After a plugin reload, a publish still running from before it is
 	check((tonumber(SDK.prefs.publishHeartbeat) or 0) == 0, 'heartbeat cleared when the publish ends')
 end)
 
+scenario('21', 'Turning on HDR Output republishes instead of counting old JPEGs as current', function()
+	SDK.advance(61)
+	cycle()
+	local mark = #SDK.http
+	W.service._settings.LR_enableHDRDisplay = true
+	W.service._settings.LR_maximumCompatibility = true
+	-- Lightroom marks every published photo for republishing when publish settings change.
+	SDK.flagModified(W.p2)
+	SDK.advance(61)
+	cycle()
+	check(#uploadsOf(F .. 'DSCF0002.RAF', mark) == 1, 'DSCF0002 rendered and uploaded again with HDR on')
+	check(not record(W.smart, W.p2)._edited, 'and recorded')
+	W.service._settings.LR_enableHDRDisplay = false
+	W.service._settings.LR_maximumCompatibility = nil
+end)
+
 scenario('15', 'The loop, the menu items, Init/Shutdown, the settings dialog', function()
 	-- Init.lua starts the loop; Publish Now during the poll wait forces a cycle; Shutdown.lua stops it.
 	SDK.edit(W.p3, { develop = { Exposure2012 = 0.7 } })
