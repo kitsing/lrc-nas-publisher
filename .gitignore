@@ -1,0 +1,6 @@
+.DS_Store
+._*
+# The container's token and state
+container/config/
+config/
+*.part

@@ -1,0 +1,7 @@
+.git/
+config/
+*_test.go
+README.md
+._*
+**/._*
+.DS_Store

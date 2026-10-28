@@ -1,0 +1,129 @@
+--[[ NasClient.lua
+Talks to the lrc-nas-publisher container. Every call returns
+  true, decodedJsonBody        on HTTP 200 with {"ok":true,...}
+  false, message, httpStatus   otherwise (status is nil when the NAS is unreachable)
+Call from an async task (LrHttp blocks).
+]]
+
+local LrFileUtils = import 'LrFileUtils'
+local LrHttp = import 'LrHttp'
+local LrTasks = import 'LrTasks'
+
+local Json = require 'Json'
+local Settings = require 'Settings'
+local State = require 'State'
+
+-- The token from the container's config folder on a mounted share, or ''. LrFileUtils calls may
+-- yield, so only LrTasks.pcall can guard them; plain io is the fallback.
+local function readTokenFile(path)
+	local ok, text = LrTasks.pcall(LrFileUtils.readFile, path)
+	if not (ok and type(text) == 'string') then
+		text = nil
+		local f = io.open(path, 'r')
+		if f then
+			text = f:read('*a')
+			f:close()
+		end
+	end
+	return type(text) == 'string' and (text:gsub('%s', '')) or ''
+end
+
+local function findToken()
+	for _, path in ipairs(Settings.tokenFiles) do
+		if LrFileUtils.exists(path) == 'file' then
+			local token = readTokenFile(path)
+			if token ~= '' then return token end
+			State.log('could not read the token in %s', path)
+		end
+	end
+	return ''
+end
+
+local NasClient = {}
+NasClient.__index = NasClient
+
+function NasClient.new(settings)
+	local url = (settings.npNasUrl or ''):gsub('%s', ''):gsub('/+$', '')
+	local token = (settings.npToken or ''):gsub('%s', '')
+	if token == '' then
+		-- Not entered: read it from the container's config folder on a mounted share.
+		token = findToken()
+	end
+	return setmetatable({ url = url, token = token }, NasClient)
+end
+
+function NasClient:headers(extra)
+	local h = { { field = 'Authorization', value = 'Bearer ' .. self.token } }
+	for _, x in ipairs(extra or {}) do h[#h + 1] = x end
+	return h
+end
+
+-- Turns an LrHttp result into the convention above.
+function NasClient:result(body, hdrs)
+	if not hdrs or hdrs.error or not hdrs.status then
+		local why = hdrs and hdrs.error and (hdrs.error.name or hdrs.error.errorCode) or 'no answer'
+		return false, string.format("Can't reach the NAS at %s (%s).", self.url, tostring(why)), nil
+	end
+	local data = Json.decode(body or '')
+	if hdrs.status == 200 and type(data) == 'table' and data.ok == true then
+		return true, data
+	end
+	local msg = type(data) == 'table' and type(data.error) == 'string' and data.error
+		or string.format('HTTP %s from %s', tostring(hdrs.status), self.url)
+	return false, msg, hdrs.status
+end
+
+function NasClient:configured()
+	if not self.url:match('^https?://[^/]+') then return false, 'Enter the NAS address, e.g. http://nas.local:8765.' end
+	if self.token == '' then
+		return false, "Enter the NAS's access token (the token file in the container's config folder)."
+	end
+	return true
+end
+
+function NasClient:postJson(path, payload, timeout)
+	local ok, why = self:configured()
+	if not ok then return false, why end
+	local body, hdrs = LrHttp.post(self.url .. path, Json.encode(payload or {}),
+		self:headers { { field = 'Content-Type', value = 'application/json' } }, 'POST', timeout or 30)
+	return self:result(body, hdrs)
+end
+
+function NasClient:hello(info)
+	return self:postJson('/api/hello', info, 10)
+end
+
+-- ids: list of published ids. Answers results = { [id] = 'deleted' | 'missing' | 'error: ...' }.
+function NasClient:delete(ids, reason)
+	return self:postJson('/api/delete', { ids = Json.array(ids), reason = reason }, 60)
+end
+
+-- items: list of { key=, rel=, variant=, fingerprint= }. Answers
+-- results = { [key] = { id=, current= } }; current means the NAS has this fingerprint already.
+function NasClient:check(items)
+	return self:postJson('/api/check', { items = Json.array(items) }, 60)
+end
+
+function NasClient:sidecars()
+	local ok, why = self:configured()
+	if not ok then return false, why end
+	local body, hdrs = LrHttp.get(self.url .. '/api/sidecars', self:headers(), 120)
+	return self:result(body, hdrs)
+end
+
+-- Uploads the rendered JPEG at filePath; fields are rel, variant, previousId,
+-- fingerprint and uuid (see the container's handleUpload). The file is streamed
+-- from disk.
+function NasClient:upload(filePath, fields)
+	local ok, why = self:configured()
+	if not ok then return false, why end
+	local content = {}
+	for _, name in ipairs { 'rel', 'variant', 'previousId', 'fingerprint', 'uuid' } do
+		if fields[name] ~= nil then content[#content + 1] = { name = name, value = tostring(fields[name]) } end
+	end
+	content[#content + 1] = { name = 'file', fileName = 'photo.jpg', filePath = filePath, contentType = 'image/jpeg' }
+	local body, hdrs = LrHttp.postMultipart(self.url .. '/api/photos', content, self:headers(), 600)
+	return self:result(body, hdrs)
+end
+
+return NasClient

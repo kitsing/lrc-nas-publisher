@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  container:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: container/go.mod
+      - name: go vet and test
+        working-directory: container
+        run: |
+          go vet -mod=vendor ./...
+          go test -mod=vendor -race -count=1 ./...
+
+  plugin-unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y lua5.1
+      - name: syntax and unit tests
+        working-directory: plugin
+        run: |
+          for f in NASPublisher.lrplugin/*.lua; do luac5.1 -p "$f"; done
+          lua5.1 tests/json_test.lua NASPublisher.lrplugin
+          lua5.1 tests/pathutil_test.lua NASPublisher.lrplugin
+          lua5.1 tests/jpegsize_test.lua NASPublisher.lrplugin tests
+
+  harness:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: build the container image
+        run: docker build -t local/lrc-nas-publisher:test container
+      - name: plugin on a fake Lightroom against the container
+        run: sh plugin/tests/run_harness.sh

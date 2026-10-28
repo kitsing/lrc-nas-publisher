@@ -1,0 +1,29 @@
+# lrc-nas-publisher: receives the JPEGs that the "NAS Publisher" Lightroom Classic plugin renders from
+# edited RAWs, and files them in an export folder in the same folders as the RAWs. Idle while
+# Lightroom isn't running. See README.md.
+#
+# Synology: put this folder at e.g. /volume1/docker/projects/lrc-nas-publisher and create a project
+# from it in Container Manager. Elsewhere: docker compose up -d --build
+#
+# Change the two paths marked CHANGE ME to your NAS's folders.
+services:
+  lrc-nas-publisher:
+    build: .
+    image: local/lrc-nas-publisher:1.0.0  # a new tag, so Container Manager builds it
+    container_name: lrc-nas-publisher
+    restart: unless-stopped
+    stop_grace_period: 1m  # lets an upload in progress finish
+    ports:
+      - "8765:8765"  # the plugin talks to http://<your-nas>:8765
+    volumes:
+      # CHANGE ME: the RAWs (read-only). The plugin's "RAW folder on this Mac" setting is this
+      # folder as the Mac sees it over SMB.
+      - "/volume1/photo/RAW:/source:ro"
+      # CHANGE ME: where the JPEGs go. Create it first; new files and folders get its owner.
+      - /volume1/photo/exported:/export
+      # token (the plugin's access token, created on first start) and state.json (what's published).
+      # The plugin finds the token over SMB, e.g. /Volumes/docker/projects/lrc-nas-publisher/config/token.
+      - ./config:/config
+    environment:
+      TZ: UTC  # your time zone, e.g. America/Los_Angeles, for log and status times
+      # SCAN_INTERVAL_MINUTES: "10"  # how often to look for edited XMP sidecars while Lightroom is online
