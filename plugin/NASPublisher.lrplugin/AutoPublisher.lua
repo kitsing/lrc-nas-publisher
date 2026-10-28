@@ -271,7 +271,7 @@ local function publishCollection(coll, auto)
 	while not done and not State.stopping do
 		LrTasks.sleep(1)
 		local now = LrDate.currentTime()
-		if not State.publishing then
+		if not State.publishRunning() then
 			local quiet = now - (State.activityAt or started)
 			if (State.activityAt == nil and quiet >= 120) or (State.activityAt ~= nil and quiet >= 60) then
 				State.log('publish of "%s" ended without a done signal', coll:getName())
@@ -386,7 +386,10 @@ end
 -- One pass over every NAS Publisher service. force: publish now, without waiting for edits to
 -- settle, even where auto-publish is off.
 function AutoPublisher.cycle(force)
-	if State.publishing then return end
+	if State.publishRunning() then
+		State.setStatus('Publishing… (the loop waits for it to finish)')
+		return
+	end
 	local catalog = LrApplication.activeCatalog()
 	local services = catalog:getPublishServices(_PLUGIN.id)
 	if #services == 0 then

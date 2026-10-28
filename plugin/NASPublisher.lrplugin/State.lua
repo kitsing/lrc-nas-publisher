@@ -6,6 +6,7 @@ plus the plugin's log (~/Library/Logs/Adobe/Lightroom/LrClassicLogs/NASPublisher
 local LrDate = import 'LrDate'
 local LrDialogs = import 'LrDialogs'
 local LrLogger = import 'LrLogger'
+local LrPrefs = import 'LrPrefs'
 local LrTasks = import 'LrTasks'
 
 local logger = LrLogger('NASPublisher')
@@ -29,8 +30,27 @@ local State = {
 }
 
 -- Last sign of a publish at work (processRenderedPhotos or a delete), for the loop's stall check.
+-- It also goes into the plugin's preferences, which every copy of the plugin shares: after a
+-- plugin reload, the new loop must not start publishes while one from before the reload runs.
+local prefs = LrPrefs.prefsForPlugin()
+local PUBLISH_STALE_SECONDS = 20 * 60 -- one AI Denoise render of a 100 MP RAW can take minutes
+
 function State.touch()
 	State.activityAt = LrDate.currentTime()
+	if State.publishing then prefs.publishHeartbeat = State.activityAt end
+end
+
+function State.publishEnded()
+	State.publishing = false
+	State.activityAt = LrDate.currentTime()
+	prefs.publishHeartbeat = 0
+end
+
+-- A publish is running here, or in this plugin's copy from before a reload.
+function State.publishRunning()
+	if State.publishing then return true end
+	local beat = tonumber(prefs.publishHeartbeat) or 0
+	return beat > 0 and LrDate.currentTime() - beat < PUBLISH_STALE_SECONDS
 end
 
 function State.log(fmt, ...)
@@ -108,15 +128,12 @@ end
 
 -- What the plugin tells the NAS about itself (shown on the container's status page).
 function State.helloInfo(catalog)
-	local host = 'Lightroom Classic'
-	local ok, name = LrTasks.pcall(function() return import('LrSystemInfo').computerName() end)
-	if ok and type(name) == 'string' and name ~= '' then host = name end
 	local path
 	if catalog then
 		local okPath, p = LrTasks.pcall(catalog.getPath, catalog)
 		if okPath then path = p end
 	end
-	return { client = 'NASPublisher', version = State.version, host = host, catalog = path, sidecars = State.wantSidecars == true }
+	return { client = 'NASPublisher', version = State.version, host = 'Lightroom Classic', catalog = path, sidecars = State.wantSidecars == true }
 end
 
 function State.bezel(msg)

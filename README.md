@@ -54,7 +54,7 @@ Mac over SMB, and Docker on the NAS. Windows is untested and its paths aren't ha
 
 - `cd container && go test ./...`: the service.
 - `sh plugin/tests/run_harness.sh`: the plugin's Lua on a fake Lightroom SDK, against the real
-  container in Docker (20 scenarios).
+  container in Docker (21 scenarios).
 - `plugin/tests/*_test.lua`: unit tests, run with Lua 5.1.
 
 CI runs all three on every push.

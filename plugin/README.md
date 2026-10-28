@@ -76,8 +76,8 @@ running on the NAS (see `../container/README.md`).
 ## Development
 
 The plugin is plain Lua 5.1. `tests/run_harness.sh` runs it on a fake Lightroom SDK
-(`tests/fake_lrsdk.lua`) against the real container in Docker: 20 scenarios covering settling,
+(`tests/fake_lrsdk.lua`) against the real container in Docker: 21 scenarios covering settling,
 republishing, removals, the NAS going away, wrong settings, smart-preview renders, sidecar
-imports, Unicode paths and plugin reloads. The fake follows the documented SDK behavior; where the
+imports, Unicode paths, and plugin reloads (including one mid-publish). The fake follows the documented SDK behavior; where the
 real SDK surprised us (`exportSession:photosToExport()` returns an iterator), the fake was fixed
 to match. `tests/*_test.lua` are unit tests (`lua5.1 tests/json_test.lua NASPublisher.lrplugin`).

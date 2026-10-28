@@ -707,6 +707,23 @@ scenario('19', 'Wrong "RAW folder" setting: nothing is rendered, the status says
 	check(not record(W.smart, W.p2)._edited, 'published once the setting is right')
 end)
 
+scenario('20', 'After a plugin reload, a publish still running from before it is waited for', function()
+	-- The copy of the plugin from before the reload is mid-publish: it keeps a heartbeat in the
+	-- shared preferences, which this copy's State knows nothing about.
+	SDK.edit(W.p2, { develop = { Exposure2012 = -1.6 } })
+	SDK.advance(61)
+	SDK.prefs.publishHeartbeat = SDK.now - 30
+	local pn = SDK.counters.publishNow
+	cycle()
+	check(SDK.counters.publishNow == pn, 'no second publish started while the other one runs')
+	check(contains(State.status, 'Publishing'), 'status says a publish is running', State.status)
+	-- That publish ended long ago without clearing its heartbeat (Lightroom quit mid-publish).
+	SDK.prefs.publishHeartbeat = SDK.now - 21 * 60
+	cycle()
+	check(SDK.counters.publishNow > pn and not record(W.smart, W.p2)._edited, 'a stale heartbeat does not block publishing')
+	check((tonumber(SDK.prefs.publishHeartbeat) or 0) == 0, 'heartbeat cleared when the publish ends')
+end)
+
 scenario('15', 'The loop, the menu items, Init/Shutdown, the settings dialog', function()
 	-- Init.lua starts the loop; Publish Now during the poll wait forces a cycle; Shutdown.lua stops it.
 	SDK.edit(W.p3, { develop = { Exposure2012 = 0.7 } })

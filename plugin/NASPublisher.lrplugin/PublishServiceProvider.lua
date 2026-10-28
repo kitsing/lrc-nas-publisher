@@ -238,9 +238,8 @@ function provider.processRenderedPhotos(functionContext, exportContext)
 	State.publishing = true
 	State.touch()
 	functionContext:addCleanupHandler(function()
-		State.publishing = false
 		if collId and State.autoFor then State.autoFor[collId] = nil end
-		State.touch()
+		State.publishEnded()
 	end)
 
 	local settings = exportContext.propertyTable
