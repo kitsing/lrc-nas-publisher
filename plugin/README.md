@@ -60,20 +60,27 @@ running on the NAS (see `../container/README.md`).
 
 ## Notes
 
-- Automatic publishes never show dialogs. A photo that fails because of itself (an unreadable
-  file, a RAW the NAS can't find) is skipped until you edit it again. One that fails because of
-  the NAS (a full disk) is retried after 1, 5, 30 and then every 120 minutes. Status counts both.
-  A manual Publish click or **Publish Now** tells you what went wrong.
-- Before uploading, the plugin checks that the original is still there and that the JPEG has the
-  original's size. If the share dropped mid-publish, Lightroom would otherwise quietly render from
-  the smart preview (about 2560 px); such a render is thrown away and the photo waits.
+- The plugin shows no dialogs during automatic publishes. A photo that fails because of itself (a
+  render that fails twice, a RAW the NAS can't find) is skipped until you edit it again. One that
+  may come right by itself (a full NAS disk, an original that's missing for now) is retried after
+  1, 5, 30 and then every 120 minutes, or at once after its next edit. Status counts both. A manual
+  Publish click or **Publish Now** tells you what went wrong.
+- Lightroom itself lists photos it couldn't render (say, the share dropped) in its *Export Results*
+  window, and holds the publish open until you close it: automatic publishing waits until then.
+- If the share drops mid-publish, the publish pauses and the photos stay queued; nothing is
+  written off. Before uploading, the plugin also checks that the JPEG has the original's size:
+  Lightroom would otherwise quietly render from the smart preview (about 2560 px).
 - If the NAS can't find the RAWs (the **RAW folder on this Mac** setting doesn't match the
   container's folder), nothing is rendered and Status says so.
 - Lightroom sometimes marks photos as *Modified* without a real change. The container remembers
   each JPEG's edit fingerprint, so such photos leave the queue without being rendered or uploaded
   again.
 - Moving a RAW to another folder in Lightroom republishes it at the new path and removes the old
-  JPEG. Moving it out of the RAW folder removes its JPEG. Renaming a virtual copy renames its JPEG.
+  JPEG. Moving it out of the RAW folder removes its JPEG once the NAS confirms the RAW has left
+  (a container from before 1.1.1 can't check, so the JPEG stays). If the share comes back under
+  another name (`/Volumes/home-1`) and Lightroom's folders and **RAW folder on this Mac** disagree,
+  nothing is removed, sidecar imports wait, and Status says so. Renaming a virtual copy renames its
+  JPEG.
 - Removing a published photo from the catalog: Lightroom asks whether to delete it from the
   service too.
 - HDR edits are published as SDR JPEGs unless you turn on **HDR Output** (and **Maximize
@@ -83,8 +90,9 @@ running on the NAS (see `../container/README.md`).
 ## Development
 
 The plugin is plain Lua 5.1. `tests/run_harness.sh` runs it on a fake Lightroom SDK
-(`tests/fake_lrsdk.lua`) against the real container in Docker: 23 scenarios covering settling,
-republishing, removals, the NAS going away, wrong settings, smart-preview renders, sidecar
+(`tests/fake_lrsdk.lua`) against the real container in Docker: 26 scenarios covering settling,
+republishing, removals, the NAS or the share going away, a share remounted under another name,
+wrong settings, smart-preview renders, sidecar
 imports, Unicode paths, and plugin reloads (including one mid-publish). The fake follows the documented SDK behavior; where the
 real SDK surprised us (`exportSession:photosToExport()` returns an iterator), the fake was fixed
 to match. `tests/*_test.lua` are unit tests (`lua5.1 tests/json_test.lua NASPublisher.lrplugin`).

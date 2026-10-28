@@ -194,8 +194,14 @@ func (a *App) handleHello(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok": true, "server": "lrc-nas-publisher", "version": version, "serverId": serverID,
 		"published": published, "sourceDir": a.cfg.SourceDir, "exportDir": a.cfg.ExportDir,
+		"features": features,
 	})
 }
+
+// features tells the plugin what this container understands, so a newer plugin
+// can hold back requests an older container would misread. deleteIfSourceGone:
+// /api/delete honours onlyIfSourceGone.
+var features = []string{"deleteIfSourceGone"}
 
 // handleSidecars lists RAWs whose XMP sidecar has Camera Raw settings. It waits
 // up to a minute for a scan that is under way; the plugin asks again later if

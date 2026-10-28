@@ -32,9 +32,12 @@ The export folder can then feed whatever comes next: Synology Photos, an album s
 - Mirrors the RAW folder tree. Virtual copies, name clashes (`DSCF0001.RAF` + `DSCF0001.NEF`) and
   Unicode/case differences between macOS and the NAS are handled.
 - Removes the JPEG when a photo's edits are reset, it's moved out of the RAW folder or it leaves the
-  collection. Republishes at the new path when the RAW moves.
+  collection. Republishes at the new path when the RAW moves. A photo only counts as moved out once
+  the NAS confirms its RAW left, so a share that comes back under another name (`/Volumes/home-1`)
+  can't empty the export.
 - Skips photos Lightroom flags as modified without a real change, using an edit fingerprint.
-- Never publishes a low-resolution smart-preview render if the share drops mid-publish.
+- If the share drops mid-publish, pauses without writing any photo off, and never publishes a
+  low-resolution smart-preview render.
 - Optionally adds RAWs with edited `.xmp` sidecars that aren't in the catalog yet, so edits made
   elsewhere get published too.
 - Keeps a flat `starred/` album of your starred photos (hard links, no extra space) that follows

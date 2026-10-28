@@ -509,7 +509,13 @@ scenario('11', 'Rendering failure in an automatic publish', function()
 	check(#SDK.dialogs == dialogs, 'no dialog', #SDK.dialogs - dialogs .. ' dialogs')
 	check(not record(W.smart, W.p3)._edited, 'the other photo published')
 	check(record(W.smart, W.p2)._edited, 'failed photo not recorded')
-	check(State.failed[W.p2.localIdentifier] ~= nil, 'failed photo remembered')
+	check(State.failed[W.p2.localIdentifier] == nil and State.isWaitingToRetry(W.p2, W.p2._lastEditTime),
+		'a first render failure is retried (it may have been a share reconnecting)')
+	local firstRenders = renderCount(W.p2)
+	SDK.advance(61)
+	cycle()
+	check(renderCount(W.p2) == firstRenders + 1, 'rendered once more a minute later')
+	check(State.failed[W.p2.localIdentifier] ~= nil, 'failed photo remembered after failing again')
 	local renders, pn = renderCount(W.p2), SDK.counters.publishNow
 	SDK.advance(31)
 	cycle()
@@ -686,6 +692,175 @@ scenario('18', 'Share drops mid-publish: a smart-preview-sized render is not upl
 	check(not record(W.smart, W.p2)._edited, 'published from the original once it renders at full size')
 end)
 
+scenario('18b', 'Share drops while Lightroom renders: the render fails, no photo is written off', function()
+	SDK.edit(W.p2, { develop = { Exposure2012 = -1.4 } })
+	SDK.edit(W.p3, { develop = { Exposure2012 = 0.6 } })
+	SDK.advance(61)
+	local dialogs, renders = #SDK.dialogs, #SDK.renders
+	SDK.renderHook = function()
+		SDK.renderHook = nil
+		SDK.unmounted[#SDK.unmounted + 1] = SRC
+	end
+	cycle()
+	check(#SDK.renders == renders + 1, 'nothing rendered after the failed render', (#SDK.renders - renders) .. ' renders')
+	check(record(W.smart, W.p2)._edited and record(W.smart, W.p3)._edited, 'both photos still queued')
+	check(State.failed[W.p2.localIdentifier] == nil and State.failed[W.p3.localIdentifier] == nil,
+		'neither counted as a failure of the photo')
+	check(contains(State.status, 'Paused publishing'), 'status says publishing paused', State.status)
+	check(#SDK.dialogs == dialogs, 'no dialog')
+	SDK.advance(31)
+	cycle()
+	check(contains(State.status, 'is the share mounted'), 'waits for the share', State.status)
+	SDK.unmounted = {}
+	SDK.advance(31)
+	cycle()
+	check(not record(W.smart, W.p2)._edited and not record(W.smart, W.p3)._edited, 'both published once the share is back')
+end)
+
+scenario('18c', 'Share back under another name: Lightroom and the setting disagree, no JPEG is deleted', function()
+	-- Lightroom's folders no longer under the "RAW folder" path, as after Find Missing Folder pointed
+	-- them at /Volumes/home-1, or a reboot brought the share back at /Volumes/home after that.
+	local moved = {}
+	local function relocate(newRoot)
+		for _, p in ipairs(SDK.catalog._photos) do
+			if not p._master and p._path:sub(1, #SRC + 1) == SRC .. '/' then
+				moved[#moved + 1] = { photo = p, path = p._path }
+				SDK.move(p, newRoot .. p._path:sub(#SRC + 1))
+			end
+		end
+	end
+	local function restore()
+		for _, m in ipairs(moved) do SDK.move(m.photo, m.path) end
+		moved = {}
+	end
+	local function flagged()
+		for _, pp in ipairs(W.smart:getPublishedPhotos()) do if pp:getEditedFlag() then return true end end
+		return false
+	end
+	local before = table.concat(exportJpegs(), ' ')
+	check(before ~= '', 'JPEGs on the NAS to begin with')
+	local function unchanged(what) check(table.concat(exportJpegs(), ' ') == before, what, table.concat(exportJpegs(), ' ')) end
+	local start = #SDK.http
+
+	-- Lightroom's folder isn't there (home-1 went away again). The NAS still has the RAWs.
+	relocate('/Volumes/home-1/gone')
+	local mark = #SDK.http
+	SDK.advance(31)
+	cycle()
+	check(httpCount('/api/delete', mark) == 1, 'the NAS is asked whether the RAWs left')
+	unchanged('it kept every JPEG')
+	check(not flagged(), 'no photo marked for republishing')
+	check(contains(State.status, 'RAWs are still on the NAS'), 'status explains the mismatch', State.status)
+	mark = #SDK.http
+	SDK.advance(31)
+	cycle()
+	check(httpCount('/api/delete', mark) == 0, 'not asked again on the next cycle')
+	SDK.advance(601)
+	cycle()
+	check(httpCount('/api/delete', mark) == 1, 'asked again after 10 minutes')
+	unchanged('still every JPEG')
+	restore()
+
+	-- Lightroom's folder is there and is the same share (a symlink stands in for home-1).
+	local SRC1 = ROOT .. '/source-1'
+	os.execute('ln -sfn ' .. q(SRC) .. ' ' .. q(SRC1))
+	relocate(SRC1)
+	SDK.advance(601)
+	cycle()
+	unchanged('the NAS kept every JPEG')
+	check(not flagged(), 'no photo marked for republishing')
+	restore()
+	os.execute('rm -f ' .. q(SRC1))
+
+	-- A container from before 1.1.1 would delete without checking: it isn't asked at all.
+	local NasClient = require 'NasClient'
+	local hello = NasClient.hello
+	NasClient.hello = function(self, info)
+		local ok, res = hello(self, info)
+		if ok then res.features = nil end
+		return ok, res
+	end
+	relocate('/Volumes/home-1/gone')
+	mark = #SDK.http
+	SDK.advance(601)
+	cycle()
+	NasClient.hello = hello
+	check(httpCount('/api/delete', mark) == 0, 'no delete sent to an older container')
+	unchanged('every JPEG still on the NAS')
+	check(contains(State.status, 'until its container is updated'), 'status says why', State.status)
+	restore()
+	check(httpCount('/api/photos', start) == 0, 'nothing uploaded again meanwhile')
+
+	SDK.advance(601)
+	cycle()
+	check(not contains(State.status, 'published photos are outside'), 'status clears once the paths agree again', State.status)
+	unchanged('still every JPEG')
+	check(not flagged(), 'nothing to republish')
+
+	-- A RAW that really left the NAS folder, to a drive that has been ejected since: the NAS sees
+	-- it gone and removes the JPEG.
+	local id3, home3 = record(W.smart, W.p3)._remoteId, W.p3._path
+	local name3 = home3:match('[^/]+$')
+	os.execute('mkdir -p ' .. q(ROOT .. '/archive') .. ' && mv ' .. q(home3) .. ' ' .. q(ROOT .. '/archive/'))
+	SDK.move(W.p3, '/Volumes/Archive/' .. name3)
+	SDK.advance(31)
+	cycle()
+	check(exportFile(id3) == nil, 'its JPEG was removed', id3)
+	check(record(W.smart, W.p3)._edited, 'and it is marked to publish again if it comes back')
+	os.execute('mv ' .. q(ROOT .. '/archive/' .. name3) .. ' ' .. q(home3))
+	SDK.move(W.p3, home3)
+	SDK.advance(31)
+	cycle()
+	check(exportFile(id3) ~= nil and not record(W.smart, W.p3)._edited, 'published again once back', id3)
+end)
+
+scenario('18d', 'Original missing for a while: retried, released by its next edit; a drop while planning', function()
+	-- The original vanishes with the share still mounted (a share reconnecting, say).
+	local path2 = W.p2._path
+	SDK.edit(W.p2, { develop = { Exposure2012 = -1.5 } })
+	os.execute('mv ' .. q(path2) .. ' ' .. q(path2 .. '.away'))
+	SDK.advance(61)
+	cycle()
+	local r = (State.retry or {})[W.p2.localIdentifier]
+	check(r ~= nil and State.failed[W.p2.localIdentifier] == nil, 'retried later, not written off')
+	SDK.advance(61)
+	cycle()
+	r = (State.retry or {})[W.p2.localIdentifier]
+	check(r ~= nil and r.count == 2, 'still missing a minute later: next look in 5 minutes', r and r.count)
+	-- Another photo's publish meanwhile doesn't push the retry further out.
+	SDK.edit(W.p3, { develop = { Exposure2012 = 0.7 } })
+	SDK.advance(61)
+	cycle()
+	check(not record(W.smart, W.p3)._edited, 'the other photo published')
+	r = (State.retry or {})[W.p2.localIdentifier]
+	check(r ~= nil and r.count == 2, 'the waiting photo was not marked again', r and r.count)
+	-- Back, and edited again: published right away, whatever the backoff.
+	os.execute('mv ' .. q(path2 .. '.away') .. ' ' .. q(path2))
+	SDK.edit(W.p2, { develop = { Exposure2012 = -1.6 } })
+	SDK.advance(61)
+	cycle()
+	check(not record(W.smart, W.p2)._edited, 'published after its next edit')
+
+	-- The share drops while plan() reads the photos' settings: the photos after the drop wait for
+	-- the share instead of being retried as missing originals.
+	SDK.edit(W.p2, { develop = { Exposure2012 = -1.7 } })
+	SDK.edit(W.p3, { develop = { Exposure2012 = 0.8 } })
+	SDK.advance(61)
+	SDK.developHook = function()
+		SDK.developHook = nil
+		SDK.unmounted[#SDK.unmounted + 1] = SRC
+	end
+	cycle()
+	local retry = State.retry or {}
+	check(retry[W.p2.localIdentifier] == nil and retry[W.p3.localIdentifier] == nil,
+		'neither photo set to retry as a missing original')
+	check(record(W.smart, W.p2)._edited and record(W.smart, W.p3)._edited, 'both still queued')
+	SDK.unmounted = {}
+	SDK.advance(31)
+	cycle()
+	check(not record(W.smart, W.p2)._edited and not record(W.smart, W.p3)._edited, 'both published once the share is back')
+end)
+
 scenario('19', 'Wrong "RAW folder" setting: nothing is rendered, the status says why', function()
 	W.service._settings.npSourceRoot = ROOT -- the parent of the container's SOURCE_DIR
 	SDK.edit(W.p2, { develop = { Exposure2012 = -1.4 } })
@@ -853,7 +1028,8 @@ for _, s in ipairs(scenarios) do
 		print('\n== ' .. scenarioName)
 		local errors, problems = #SDK.errors, #SDK.problems
 		local ok, err = xpcall(s.f, debug.traceback)
-		SDK.httpHook, SDK.sleepHook = nil, nil
+		SDK.httpHook, SDK.sleepHook, SDK.renderHook, SDK.developHook = nil, nil, nil, nil
+		SDK.unmounted = {}
 		if not ok then
 			check(false, 'scenario ran to the end', err)
 			if not nasHealthy() and NAS_CONTAINER then pcall(startNas) end

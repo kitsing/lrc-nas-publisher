@@ -13,7 +13,7 @@ local logger = LrLogger('NASPublisher')
 logger:enable('logfile')
 
 local State = {
-	version = '1.1.0',
+	version = '1.1.1',
 	status = 'Starting…',
 	statusAt = nil,
 	nasOnline = false,
@@ -84,13 +84,23 @@ function State.isFailed(photo, editTime)
 	return true
 end
 
--- A photo that failed for a reason that may pass (the NAS's disk, a 5xx answer) is retried
--- after 1, 5, 30 and then every 120 minutes, instead of on every cycle.
+-- A photo that failed for a reason that may pass (the NAS's disk, a 5xx answer, a share that is
+-- reconnecting) is retried after 1, 5, 30 and then every 120 minutes, instead of on every cycle.
+-- Like a failure, a retry belongs to one version of the photo: a new edit tries again at once.
 local RETRY_MINUTES = { 1, 5, 30, 120 }
 
-function State.markRetry(photo, reason)
+local function retryEntry(photo, editTime)
+	local r = State.retry and State.retry[photo.localIdentifier]
+	if r and editTime ~= nil and editTime ~= r.editTime then
+		State.retry[photo.localIdentifier] = nil
+		return nil
+	end
+	return r
+end
+
+function State.markRetry(photo, reason, editTime)
 	State.retry = State.retry or {}
-	local r = State.retry[photo.localIdentifier] or { count = 0 }
+	local r = retryEntry(photo, editTime) or { count = 0, editTime = editTime or 0 }
 	r.count = r.count + 1
 	r.at = LrDate.currentTime() + 60 * RETRY_MINUTES[math.min(r.count, #RETRY_MINUTES)]
 	r.reason = tostring(reason)
@@ -98,9 +108,15 @@ function State.markRetry(photo, reason)
 	State.log('retrying %s later: %s', tostring(photo.localIdentifier), r.reason)
 end
 
-function State.isWaitingToRetry(photo)
-	local r = State.retry and State.retry[photo.localIdentifier]
+function State.isWaitingToRetry(photo, editTime)
+	local r = retryEntry(photo, editTime)
 	return r ~= nil and LrDate.currentTime() < r.at
+end
+
+-- Why the last try at this version of the photo failed, if it did.
+function State.retryReason(photo, editTime)
+	local r = retryEntry(photo, editTime)
+	return r and r.reason
 end
 
 function State.clearRetry(photo)

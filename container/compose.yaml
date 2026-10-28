@@ -9,7 +9,7 @@
 services:
   lrc-nas-publisher:
     build: .
-    image: local/lrc-nas-publisher:1.1.0  # a new tag, so Container Manager builds it
+    image: local/lrc-nas-publisher:1.1.1  # a new tag, so Container Manager builds it
     container_name: lrc-nas-publisher
     restart: unless-stopped
     stop_grace_period: 1m  # lets an upload in progress finish

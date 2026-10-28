@@ -341,6 +341,54 @@ func TestDelete(t *testing.T) {
 	}
 }
 
+// Photos Lightroom shows outside the NAS folder are deleted only once their RAW
+// has really left SOURCE_DIR: a remount under another name on the Mac must not
+// empty the export.
+func TestDeleteOnlyIfSourceGone(t *testing.T) {
+	e := newEnv(t, nil)
+	e.touch("d/A.RAF", []byte("raw"), 0)
+	e.touch("d/B.RAF", []byte("raw"), 0)
+	e.upload(map[string]string{"rel": "d/A.RAF"}, jpeg, testToken)
+	e.upload(map[string]string{"rel": "d/B.RAF"}, jpeg, testToken)
+	must(t, os.Remove(filepath.Join(e.source, "d/B.RAF"))) // B moved off the NAS
+	_, out := e.post("/api/delete", map[string]any{
+		"ids": []string{"d/A.jpg", "d/B.jpg", "d/gone.jpg"}, "reason": "moved out", "onlyIfSourceGone": true,
+	})
+	res := out["results"].(map[string]any)
+	if res["d/A.jpg"] != "kept" || res["d/B.jpg"] != "deleted" || res["d/gone.jpg"] != "unknown" {
+		t.Fatalf("results: %v", res)
+	}
+	if !e.exists("d/A.jpg") || e.exists("d/B.jpg") {
+		t.Fatal("wrong files deleted")
+	}
+	if _, ok := e.app.store.st.Photos["d/A.jpg"]; !ok {
+		t.Fatal("the kept JPEG's record was dropped")
+	}
+	// An unreadable or empty SOURCE_DIR fails closed.
+	must(t, os.RemoveAll(e.source))
+	must(t, os.MkdirAll(e.source, 0o755))
+	_, out = e.post("/api/delete", map[string]any{"ids": []string{"d/A.jpg"}, "onlyIfSourceGone": true})
+	if r := out["results"].(map[string]any)["d/A.jpg"]; r != "kept" || !e.exists("d/A.jpg") {
+		t.Fatalf("empty SOURCE_DIR: %v, exists=%v", r, e.exists("d/A.jpg"))
+	}
+	// The 1.1.0 plugin's moved-out delete (no flag, only its reason) gets the check too.
+	e.touch("d/A.RAF", []byte("raw"), 0)
+	_, out = e.post("/api/delete", map[string]any{"ids": []string{"d/A.jpg"}, "reason": movedOutReason})
+	if r := out["results"].(map[string]any)["d/A.jpg"]; r != "kept" || !e.exists("d/A.jpg") {
+		t.Fatalf("1.1.0 moved-out delete: %v", r)
+	}
+	// A plain delete (removed in Lightroom) doesn't look at SOURCE_DIR.
+	_, out = e.post("/api/delete", map[string]any{"ids": []string{"d/A.jpg"}})
+	if r := out["results"].(map[string]any)["d/A.jpg"]; r != "deleted" || e.exists("d/A.jpg") {
+		t.Fatalf("plain delete: %v", r)
+	}
+	// The plugin learns from hello that this container honours the flag.
+	_, out = e.post("/api/hello", map[string]any{"client": "test"})
+	if f, _ := out["features"].([]any); len(f) == 0 || f[0] != "deleteIfSourceGone" {
+		t.Fatalf("hello features: %v", out["features"])
+	}
+}
+
 func TestSidecarScan(t *testing.T) {
 	e := newEnv(t, nil)
 	edited := []byte(`<x:xmpmeta><rdf:Description crs:Version="17.0" crs:HasSettings="True" crs:Exposure2012="+0.50"/></x:xmpmeta>`)

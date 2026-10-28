@@ -74,10 +74,10 @@ the same activity, plus whether Lightroom is online.
 
 | Request | Purpose |
 |---|---|
-| `POST /api/hello` | Plugin heartbeat. Lightroom counts as online for `ONLINE_WINDOW_MINUTES` afterwards. |
+| `POST /api/hello` | Plugin heartbeat. Lightroom counts as online for `ONLINE_WINDOW_MINUTES` afterwards. Answers with the version, server id and `features` this container understands. |
 | `POST /api/photos` | One rendered JPEG (multipart). Answers with its id, its path under `/export`, which Lightroom stores. |
 | `POST /api/check` | Which photos are already published with the same edit fingerprint (skipped), and which RAWs the service can't find. |
-| `POST /api/delete` | Remove JPEGs by id, when photos leave the published collection. |
+| `POST /api/delete` | Remove JPEGs by id, when photos leave the published collection. With `onlyIfSourceGone` (photos Lightroom shows outside the RAW folder), a JPEG goes only once its RAW has left `/source`; otherwise, or if `/source` can't be read, the answer is `kept`. |
 | `POST /api/starred` | The starred ids (and the sender's scope: every id it publishes); the starred folder follows. |
 | `GET /api/sidecars` | RAWs with edited `.xmp` sidecars. Scans `/source` only while Lightroom is online. |
 | `GET /` | Status page (no token needed; shows file names, never photos or the token). |

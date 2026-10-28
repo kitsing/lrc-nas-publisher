@@ -362,11 +362,22 @@ func (a *App) handleCheck(w http.ResponseWriter, r *http.Request) {
 type deleteRequest struct {
 	IDs    []string `json:"ids"`
 	Reason string   `json:"reason"`
+	// OnlyIfSourceGone: delete a JPEG only once its RAW has left SOURCE_DIR.
+	// The plugin asks this for photos Lightroom shows outside the NAS photo
+	// folder. If the Mac's view is wrong (the share came back under another
+	// name, or the "RAW folder" setting doesn't match Lightroom's folders), the
+	// RAWs are all still here, and their JPEGs must stay.
+	OnlyIfSourceGone bool `json:"onlyIfSourceGone"`
 }
+
+// movedOutReason is the reason plugins send for a photo Lightroom shows outside
+// the NAS photo folder.
+const movedOutReason = "moved out of the NAS photo folder in Lightroom"
 
 // handleDelete removes published JPEGs by id. Each id's result is "deleted",
 // "missing" (already gone), "unknown" (not a JPEG this service wrote, so it is
-// left alone), or an error message. The first three are final.
+// left alone), "kept" (onlyIfSourceGone, and the RAW is still in SOURCE_DIR or
+// SOURCE_DIR can't be read), or an error message. The first three are final.
 func (a *App) handleDelete(w http.ResponseWriter, r *http.Request) {
 	var req deleteRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<20)).Decode(&req); err != nil {
@@ -377,10 +388,22 @@ func (a *App) handleDelete(w http.ResponseWriter, r *http.Request) {
 	if why == "" {
 		why = "removed in Lightroom"
 	}
+	if why == movedOutReason {
+		// The 1.1.0 plugin's moved-out deletes don't ask for the source check, but need it.
+		req.OnlyIfSourceGone = true
+	}
 	results := map[string]string{}
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	// Fail closed: with SOURCE_DIR unreadable or empty, every RAW counts as still there.
+	sourceOK := !req.OnlyIfSourceGone || dirHasEntries(a.cfg.SourceDir)
+	kept := 0
 	for _, id := range req.IDs {
+		if req.OnlyIfSourceGone && (!sourceOK || a.sourceStillThere(id)) {
+			results[id] = "kept"
+			kept++
+			continue
+		}
 		res, err := a.deleteLocked(id, why)
 		if err != nil {
 			a.store.event("error", id, "deleting: %v", err)
@@ -388,11 +411,40 @@ func (a *App) handleDelete(w http.ResponseWriter, r *http.Request) {
 		}
 		results[id] = res
 	}
+	if kept > 0 {
+		logf("INFO", "kept %d JPEGs asked to go as %q: their RAWs are still in %s (or it can't be read)", kept, why, a.cfg.SourceDir)
+	}
 	a.flushStarred()
 	if err := a.store.save(); err != nil {
 		logf("ERROR", "saving state: %v", err)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "results": results})
+}
+
+// sourceStillThere reports whether the RAW a published JPEG was made from is
+// still in SOURCE_DIR. Callers hold a.mu.
+func (a *App) sourceStillThere(id string) bool {
+	clean, err := cleanRel(id)
+	if err != nil {
+		return false
+	}
+	p, ok := a.store.st.Photos[clean]
+	if !ok || p.Source == "" {
+		return false
+	}
+	_, found := resolveSource(a.cfg.SourceDir, p.Source)
+	return found
+}
+
+// dirHasEntries reports whether dir can be read and isn't empty.
+func dirHasEntries(dir string) bool {
+	f, err := os.Open(dir)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	names, _ := f.Readdirnames(1)
+	return len(names) > 0
 }
 
 // deleteLocked removes the JPEG with this id and forgets it, but only a JPEG

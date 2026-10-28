@@ -28,8 +28,22 @@ local function readTokenFile(path)
 	return type(text) == 'string' and (text:gsub('%s', '')) or ''
 end
 
-local function findToken()
+-- A share that comes back while its old mount point is still there is mounted at
+-- /Volumes/<name>-1 (or -2, ...): look there too.
+local function tokenCandidates()
+	local out = {}
 	for _, path in ipairs(Settings.tokenFiles) do
+		out[#out + 1] = path
+		local volume, rest = path:match('^/Volumes/([^/]+)(/.+)$')
+		if volume then
+			for n = 1, 3 do out[#out + 1] = string.format('/Volumes/%s-%d%s', volume, n, rest) end
+		end
+	end
+	return out
+end
+
+local function findToken()
+	for _, path in ipairs(tokenCandidates()) do
 		if LrFileUtils.exists(path) == 'file' then
 			local token = readTokenFile(path)
 			if token ~= '' then return token end
@@ -45,11 +59,12 @@ NasClient.__index = NasClient
 function NasClient.new(settings)
 	local url = (settings.npNasUrl or ''):gsub('%s', ''):gsub('/+$', '')
 	local token = (settings.npToken or ''):gsub('%s', '')
-	if token == '' then
+	local fromFile = token == ''
+	if fromFile then
 		-- Not entered: read it from the container's config folder on a mounted share.
 		token = findToken()
 	end
-	return setmetatable({ url = url, token = token }, NasClient)
+	return setmetatable({ url = url, token = token, tokenFromFile = fromFile }, NasClient)
 end
 
 function NasClient:headers(extra)
@@ -75,7 +90,10 @@ end
 
 function NasClient:configured()
 	if not self.url:match('^https?://[^/]+') then return false, 'Enter the NAS address, e.g. http://nas.local:8765.' end
-	if self.token == '' then
+	if self.token == '' and self.tokenFromFile and Settings.tokenFiles[1] then
+		return false, string.format("Can't read the access token in %s: is that share mounted? "
+			.. '(Or enter the token in the service settings.)', Settings.tokenFiles[1])
+	elseif self.token == '' then
 		return false, "Enter the NAS's access token (the token file in the container's config folder)."
 	end
 	return true
@@ -94,8 +112,10 @@ function NasClient:hello(info)
 end
 
 -- ids: list of published ids. Answers results = { [id] = 'deleted' | 'missing' | 'error: ...' }.
-function NasClient:delete(ids, reason)
-	return self:postJson('/api/delete', { ids = Json.array(ids), reason = reason }, 60)
+-- onlyIfSourceGone: the NAS deletes a JPEG only if its RAW has left the NAS photo folder, and
+-- answers 'kept' for the others.
+function NasClient:delete(ids, reason, onlyIfSourceGone)
+	return self:postJson('/api/delete', { ids = Json.array(ids), reason = reason, onlyIfSourceGone = onlyIfSourceGone or nil }, 60)
 end
 
 -- items: list of { key=, rel=, variant=, fingerprint= }. Answers

@@ -113,9 +113,10 @@ local function importSidecarPhotos(catalog, client, root)
 				end, { timeout = 15 })
 			end)
 		elseif not okWrite then
-			-- e.g. a format Lightroom can't read: don't try again until the sidecar changes.
+			-- e.g. a format Lightroom can't read: don't try again until the sidecar changes. Unless
+			-- the file is gone now (the share dropped): then it's tried again later.
 			State.log('adding %s: %s', t.path, tostring(err))
-			seen[t.rel], changed = t.token, true
+			if LrFileUtils.exists(t.path) then seen[t.rel], changed = t.token, true end
 		end
 	end
 	if changed then prefs[seenKey] = seen end
@@ -162,8 +163,8 @@ local function findMoved(client, candidates)
 end
 
 -- What a collection has waiting: photos to publish, removals, when the most recent waiting edit
--- happened, and when any member was last edited.
-local function collectionWork(catalog, client, coll, root)
+-- happened, and when any member was last edited. canAsk: the container checks moved-out deletes.
+local function collectionWork(catalog, client, coll, root, canAsk)
 	local members = coll:getPhotos()
 	local isMember = {}
 	for _, photo in ipairs(members) do isMember[photo.localIdentifier] = true end
@@ -191,8 +192,13 @@ local function collectionWork(catalog, client, coll, root)
 	if State.deletesDeferred(key) then removals = 0 end -- the NAS refused them lately
 
 	local meta = catalog:batchGetRawMetadata(members, { 'path', 'lastEditTime', 'isVirtualCopy', 'uuid', 'rating' })
-	local work = { photos = 0, removals = removals, newestEdit = 0, newestAny = 0, outside = 0, failed = 0, ratings = {} }
+	local work = {
+		photos = 0, removals = removals, newestEdit = 0, newestAny = 0, outside = 0, failed = 0,
+		kept = 0, unasked = 0, ratings = {},
+	}
 	local published, candidates, leftFolder = {}, {}, {}
+	State.keptUntil = State.keptUntil or {}
+	local now = LrDate.currentTime()
 	for _, photo in ipairs(members) do
 		local m = meta[photo] or {}
 		local pp = byPhoto[photo.localIdentifier]
@@ -208,9 +214,20 @@ local function collectionWork(catalog, client, coll, root)
 			if waiting then
 				work.outside = work.outside + 1
 			elseif type(remoteId) == 'string' then
-				leftFolder[#leftFolder + 1] = pp -- published, then moved out of the NAS folder
+				-- Published, and now outside the NAS folder in Lightroom. Only the NAS can tell a RAW
+				-- that really left (moved to another drive, ejected or not) from a Mac that sees the
+				-- share somewhere else (/Volumes/home-1) or a "RAW folder" setting that doesn't match
+				-- Lightroom's folders: it removes the JPEG only in the first case. An older container
+				-- would remove it without checking, so it isn't asked at all.
+				if not canAsk then
+					work.unasked = work.unasked + 1
+				elseif (State.keptUntil[remoteId] or 0) > now then
+					work.kept = work.kept + 1
+				else
+					leftFolder[#leftFolder + 1] = pp
+				end
 			end
-		elseif State.isFailed(photo, m.lastEditTime) or State.isWaitingToRetry(photo) then
+		elseif State.isFailed(photo, m.lastEditTime) or State.isWaitingToRetry(photo, m.lastEditTime) then
 			if waiting then work.failed = work.failed + 1 end
 		elseif waiting then
 			work.photos = work.photos + 1
@@ -228,16 +245,22 @@ local function collectionWork(catalog, client, coll, root)
 	State.publishedMembers[key] = published
 
 	-- A RAW moved out of the NAS folder in Lightroom: remove its JPEG and mark it changed, so it
-	-- is published again if it ever comes back.
+	-- is published again if it ever comes back. The NAS keeps any whose RAW it still has; those
+	-- are asked about again in 10 minutes.
 	local unpublish = {}
 	if #leftFolder > 0 then
 		local ids = {}
 		for _, pp in ipairs(leftFolder) do ids[#ids + 1] = pp:getRemoteId() end
-		local ok, res = client:delete(ids, 'moved out of the NAS photo folder in Lightroom')
+		local ok, res = client:delete(ids, 'moved out of the NAS photo folder in Lightroom', true)
 		if ok and type(res.results) == 'table' then
 			for _, pp in ipairs(leftFolder) do
 				local r = res.results[pp:getRemoteId()]
-				if r == 'deleted' or r == 'missing' or r == 'unknown' then unpublish[#unpublish + 1] = pp end
+				if r == 'deleted' or r == 'missing' or r == 'unknown' then
+					unpublish[#unpublish + 1] = pp
+				elseif r == 'kept' then
+					State.keptUntil[pp:getRemoteId()] = now + 600
+					work.kept = work.kept + 1
+				end
 			end
 		end
 	end
@@ -372,17 +395,24 @@ local function serviceCycle(catalog, service, force)
 	noteServer(catalog, service, res.serverId)
 	ensureSmartCollection(catalog, service)
 
+	local canAsk = false
+	for _, f in ipairs(type(res.features) == 'table' and res.features or {}) do
+		if f == 'deleteIfSourceGone' then canAsk = true end
+	end
+
 	local now = LrDate.currentTime()
 	local settle = Settings.settleSeconds(settings)
-	local waitingTotal, outside, failed, newestAny = 0, 0, 0, 0
+	local waitingTotal, outside, failed, kept, unasked, newestAny = 0, 0, 0, 0, 0, 0
 	local starMin = tonumber(settings.npStarredMin) or 0
 	local starred, scope, allRead, publishedNow = {}, {}, true, false
 	for _, coll in ipairs(service:getChildCollections()) do
 		if State.stopping then return end
+		if not State.nasOnline then break end -- a publish paused (the share or the NAS went away)
 		-- One collection's trouble must not stop the others.
 		local okColl, err = LrTasks.pcall(function()
-			local work = collectionWork(catalog, client, coll, root)
+			local work = collectionWork(catalog, client, coll, root, canAsk)
 			outside, failed = outside + work.outside, failed + work.failed
+			kept, unasked = kept + work.kept, unasked + work.unasked
 			for id, rating in pairs(work.ratings) do
 				scope[id] = true
 				if starMin > 0 and rating >= starMin then starred[id] = true end
@@ -420,8 +450,10 @@ local function serviceCycle(catalog, service, force)
 	end
 
 	-- Add sidecar-edited RAWs only while you aren't editing, so the imports (which Lightroom
-	-- lists under Edit > Undo) don't get mixed up with your own changes.
-	if State.wantSidecars and now - newestAny >= settle then
+	-- lists under Edit > Undo) don't get mixed up with your own changes. Not while Lightroom's
+	-- folders and the "RAW folder" setting disagree: the catalog's copies wouldn't be found under
+	-- the setting's path, and the same RAWs would be added a second time.
+	if State.wantSidecars and kept + unasked == 0 and now - newestAny >= settle then
 		local okImport, err = LrTasks.pcall(importSidecarPhotos, catalog, client, root)
 		if not okImport then State.log('sidecar import: %s', tostring(err)) end
 	end
@@ -430,6 +462,14 @@ local function serviceCycle(catalog, service, force)
 	if waitingTotal > 0 then status = string.format('%d edited photos waiting for edits to settle', waitingTotal) end
 	if State.lastPublishSummary then status = status .. '. Last publish: ' .. State.lastPublishSummary end
 	if outside > 0 then status = status .. string.format('. %d edited photos are outside %s and are not published', outside, root) end
+	if kept > 0 then
+		status = status .. string.format('. %d published photos are outside %s in Lightroom, but their RAWs are still on '
+			.. 'the NAS, so their JPEGs stay: check that "RAW folder on this Mac" is where Lightroom shows them', kept, root)
+	end
+	if unasked > 0 then
+		status = status .. string.format('. %d published photos are outside %s in Lightroom; their JPEGs stay on the NAS '
+			.. 'until its container is updated (1.1.1 or later checks whether their RAWs left)', unasked, root)
+	end
 	if failed > 0 then status = status .. string.format('. %d photos failed and wait for their next edit or a retry (see the log)', failed) end
 	State.setStatus('%s.', status)
 end

@@ -38,6 +38,9 @@ SDK.pending = {}    -- queued tasks
 SDK.counters = { publishNow = 0, sleeps = 0, smartCreated = 0, imports = 0, writeGates = 0, privateGates = 0 }
 SDK.sleepHook = nil -- function(n) called after each LrTasks.sleep
 SDK.httpHook = nil  -- function(method, url) called before each request
+SDK.renderHook = nil -- function(photo) called as each render starts
+SDK.developHook = nil -- function(photo) called by photo:getDevelopSettings()
+SDK.unmounted = {}   -- folders that look gone to the plugin, like a dropped share (the NAS still has them)
 
 -------------------------------------------------------------------------------------------------
 -- Small helpers
@@ -92,6 +95,9 @@ end
 
 function SDK.exists(path)
 	if type(path) ~= 'string' or path == '' then return false end
+	for _, gone in ipairs(SDK.unmounted) do
+		if path == gone or path:sub(1, #gone + 1) == gone .. '/' then return false end
+	end
 	local kind = SDK.fileKind(path)
 	if not kind then
 		local alt = SDK.toNFC(path)
@@ -450,7 +456,10 @@ function Photo:getFormattedMetadata(key)
 	if key == 'folderName' then return self._path:match('([^/]+)/[^/]+$') end
 	return self._meta[key]
 end
-function Photo:getDevelopSettings() return deepcopy(self._develop) end
+function Photo:getDevelopSettings()
+	if SDK.developHook then SDK.developHook(self) end
+	return deepcopy(self._develop)
+end
 
 -------------------------------------------------------------------------------------------------
 -- Catalog
@@ -793,10 +802,13 @@ local function newRendition(run, coll, photo)
 		if self._rendered then return self._ok, self._result end
 		self._rendered = true
 		run.rendered[#run.rendered + 1] = photo
-		if photo._renderFail then
-			self._ok, self._result = false, photo._renderFail
+		if SDK.renderHook then SDK.renderHook(photo) end
+		-- Like Lightroom: no original, no render (smart previews aside, see scenario 18).
+		local failure = photo._renderFail or (not SDK.exists(photo._path) and 'File not found.') or nil
+		if failure then
+			self._ok, self._result = false, failure
 			SDK.renders[#SDK.renders + 1] = { photo = photo, ok = false }
-			return false, photo._renderFail
+			return false, failure
 		end
 		local content = photo._renderBytes or jpegFor(photo)
 		local path = tmpPath('render.jpg')

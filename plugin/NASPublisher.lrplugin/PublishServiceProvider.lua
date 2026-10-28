@@ -210,6 +210,13 @@ local function plan(photos, settings, sourceRoot)
 		end
 		plans[photo.localIdentifier] = p
 	end
+	-- This loop reads a lot of metadata, and the share can drop while it runs: the photos it then
+	-- found missing are waiting for the share like the rest.
+	if mounted and LrFileUtils.exists(root) ~= 'directory' then
+		for _, p in pairs(plans) do
+			if p.skip == 'offline' then p.skip = 'unmounted' end
+		end
+	end
 	return plans, checks
 end
 
@@ -268,6 +275,7 @@ function provider.processRenderedPhotos(functionContext, exportContext)
 	-- queued, and Lightroom shows no failure dialog for them.
 	local photos = sessionPhotos(session)
 	local reachable, why = client:hello(State.helloInfo(LrApplication.activeCatalog()))
+	local startedReachable = reachable == true
 	local plans = {}
 	if not reachable then
 		State.nasOnline = false
@@ -297,9 +305,16 @@ function provider.processRenderedPhotos(functionContext, exportContext)
 			local p = plans[photo.localIdentifier]
 			if p.skip then
 				counts.skipped[p.skip] = (counts.skipped[p.skip] or 0) + 1
-				if p.skip == 'offline' or p.skip == 'nosource' then State.markFailed(photo, p.editTime, SKIP_MESSAGES[p.skip]) end
+				if p.skip == 'offline' then
+					-- Most often a share that is reconnecting: look again in a minute, then less often.
+					if not State.isWaitingToRetry(photo, p.editTime) then
+						State.markRetry(photo, SKIP_MESSAGES.offline, p.editTime)
+					end
+				elseif p.skip == 'nosource' then
+					State.markFailed(photo, p.editTime, SKIP_MESSAGES.nosource)
+				end
 				session:removePhoto(photo)
-			elseif auto and not p.currentId and (State.isFailed(photo, p.editTime) or State.isWaitingToRetry(photo)) then
+			elseif auto and not p.currentId and (State.isFailed(photo, p.editTime) or State.isWaitingToRetry(photo, p.editTime)) then
 				session:removePhoto(photo)
 			end
 		end
@@ -331,9 +346,19 @@ function provider.processRenderedPhotos(functionContext, exportContext)
 		if permanent then
 			State.markFailed(photo, p and p.editTime, reason)
 		else
-			State.markRetry(photo, reason)
+			State.markRetry(photo, reason, p and p.editTime)
 		end
 		if not auto then rendition:uploadFailed(tostring(reason)) end
+	end
+
+	-- Most likely the share dropped: nothing more goes out in this publish, and the loop checks the
+	-- share and the NAS again before the next one. This photo and the rest stay queued, not failed.
+	local function pause(p, whyNot)
+		reachable, why = false, whyNot
+		State.nasOnline = false
+		counts.waiting = counts.waiting + 1
+		State.setStatus('Paused publishing: %s', whyNot)
+		State.log('%s: %s', tostring(p.path), whyNot)
 	end
 
 	for _, rendition in exportContext:renditions { stopIfCanceled = true } do
@@ -358,18 +383,23 @@ function provider.processRenderedPhotos(functionContext, exportContext)
 				break
 			end
 			if not ok then
-				fail(rendition, photo, p, 'Rendering failed: ' .. tostring(pathOrMessage), true)
+				-- Lightroom can't read an original whose share dropped: that isn't the photo's fault,
+				-- and every photo after it would fail the same way. If the RAW really is gone, the
+				-- next publish's plan() finds it missing with the share mounted.
+				if not LrFileUtils.exists(p.path) then
+					pause(p, 'the original went offline while publishing')
+				else
+					-- Lightroom renders a few photos ahead, so this may have failed during a short
+					-- outage that is over by now: retry once before writing the photo off.
+					local before = State.retryReason(photo, p.editTime)
+					local again = before ~= nil and before:find('Rendering failed', 1, true) == 1
+					fail(rendition, photo, p, 'Rendering failed: ' .. tostring(pathOrMessage), again)
+				end
 			else
 				local full, whyNot = renderedFromOriginal(p, pathOrMessage, settings)
 				if not full then
 					LrFileUtils.delete(pathOrMessage)
-					-- Most likely the share dropped: nothing more goes out in this publish, and the
-					-- loop checks the share and the NAS again before the next one.
-					reachable, why = false, whyNot
-					State.nasOnline = false
-					counts.waiting = counts.waiting + 1
-					State.setStatus('Paused publishing: %s', whyNot)
-					State.log('%s: %s', tostring(p.path), whyNot)
+					pause(p, whyNot)
 				else
 					local _, previousId = LrTasks.pcall(function() return rendition.publishedPhotoId end)
 					local up, res, status = client:upload(pathOrMessage, {
@@ -415,6 +445,11 @@ function provider.processRenderedPhotos(functionContext, exportContext)
 		if #notes > 0 then
 			LrDialogs.message('NAS Publisher skipped some photos', table.concat(notes, '\n'), 'info')
 		end
+	end
+	-- Nor would one that stopped partway because the share or the NAS went away.
+	if not auto and startedReachable and not reachable then
+		LrDialogs.message('NAS Publisher stopped partway', string.format('%s\n%d photos stay queued for the next publish.',
+			tostring(why), counts.waiting), 'warning')
 	end
 end
 
