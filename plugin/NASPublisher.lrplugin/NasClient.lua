@@ -104,6 +104,12 @@ function NasClient:check(items)
 	return self:postJson('/api/check', { items = Json.array(items) }, 60)
 end
 
+-- ids: the published ids that should be in the NAS's starred folder; scope: every id this
+-- service publishes, so starred photos of another catalog or service are left alone.
+function NasClient:starred(ids, scope)
+	return self:postJson('/api/starred', { ids = Json.array(ids), scope = Json.array(scope) }, 120)
+end
+
 function NasClient:sidecars()
 	local ok, why = self:configured()
 	if not ok then return false, why end

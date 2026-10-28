@@ -190,14 +190,17 @@ local function collectionWork(catalog, client, coll, root)
 	end
 	if State.deletesDeferred(key) then removals = 0 end -- the NAS refused them lately
 
-	local meta = catalog:batchGetRawMetadata(members, { 'path', 'lastEditTime', 'isVirtualCopy', 'uuid' })
-	local work = { photos = 0, removals = removals, newestEdit = 0, newestAny = 0, outside = 0, failed = 0 }
+	local meta = catalog:batchGetRawMetadata(members, { 'path', 'lastEditTime', 'isVirtualCopy', 'uuid', 'rating' })
+	local work = { photos = 0, removals = removals, newestEdit = 0, newestAny = 0, outside = 0, failed = 0, ratings = {} }
 	local published, candidates, leftFolder = {}, {}, {}
 	for _, photo in ipairs(members) do
 		local m = meta[photo] or {}
 		local pp = byPhoto[photo.localIdentifier]
 		local remoteId = pp and pp:getRemoteId()
-		if remoteId then published[photo.localIdentifier] = true end
+		if remoteId then
+			published[photo.localIdentifier] = true
+			work.ratings[remoteId] = tonumber(m.rating) or 0
+		end
 		if (m.lastEditTime or 0) > work.newestAny then work.newestAny = m.lastEditTime end
 		local waiting = (not pp) or (not remoteId) or pp:getEditedFlag()
 		local rel = PathUtil.relative(m.path, root)
@@ -309,6 +312,38 @@ local function noteServer(catalog, service, serverId)
 	prefs[key] = serverId
 end
 
+-- Tells the NAS which of this service's published photos are starred, when that changed (or the
+-- NAS's state was reset, or every 10 minutes), so its starred folder follows ratings without
+-- re-rendering. After a failure (say, a container from before the starred folder) it waits 10
+-- minutes before trying again.
+local function syncStarred(client, service, starred, scope, serverId)
+	local function sorted(set)
+		local list = {}
+		for id in pairs(set) do list[#list + 1] = id end
+		table.sort(list)
+		return list
+	end
+	local ids, all = sorted(starred), sorted(scope)
+	local key = tostring(serverId) .. '\n' .. table.concat(ids, '\n') .. '\n\n' .. table.concat(all, '\n')
+	local now = LrDate.currentTime()
+	State.starredSync = State.starredSync or {}
+	local s = State.starredSync[service.localIdentifier] or {}
+	State.starredSync[service.localIdentifier] = s
+	if now < (s.retryAt or 0) then return end
+	if key == s.key and now - (s.at or 0) < 600 then return end
+	local ok, res = client:starred(ids, all)
+	if not ok then
+		if res ~= s.lastError then State.log('starred folder: %s', tostring(res)) end
+		s.lastError, s.retryAt = res, now + 600
+		return
+	end
+	if key ~= s.key then
+		State.log('starred folder: %d photos (%d added, %d removed%s)', #ids, tonumber(res.linked) or 0,
+			tonumber(res.unlinked) or 0, (tonumber(res.failed) or 0) > 0 and (', ' .. res.failed .. ' failed') or '')
+	end
+	s.key, s.at, s.lastError, s.retryAt = key, now, nil, nil
+end
+
 local function serviceCycle(catalog, service, force)
 	local settings = Settings.normalize(service:getPublishSettings())
 	if not force and settings.npAutoPublish == false then return end
@@ -340,12 +375,18 @@ local function serviceCycle(catalog, service, force)
 	local now = LrDate.currentTime()
 	local settle = Settings.settleSeconds(settings)
 	local waitingTotal, outside, failed, newestAny = 0, 0, 0, 0
+	local starMin = tonumber(settings.npStarredMin) or 0
+	local starred, scope, allRead, publishedNow = {}, {}, true, false
 	for _, coll in ipairs(service:getChildCollections()) do
 		if State.stopping then return end
 		-- One collection's trouble must not stop the others.
 		local okColl, err = LrTasks.pcall(function()
 			local work = collectionWork(catalog, client, coll, root)
 			outside, failed = outside + work.outside, failed + work.failed
+			for id, rating in pairs(work.ratings) do
+				scope[id] = true
+				if starMin > 0 and rating >= starMin then starred[id] = true end
+			end
 			if work.newestAny > newestAny then newestAny = work.newestAny end
 			local key = coll.localIdentifier
 			if work.photos == 0 and work.removals == 0 then
@@ -357,16 +398,26 @@ local function serviceCycle(catalog, service, force)
 				if force or settled or overdue or work.photos == 0 then
 					State.setStatus('Publishing %d photos and %d removals from "%s"…', work.photos, work.removals, coll:getName())
 					publishCollection(coll, not force)
+					publishedNow = true
 					State.pendingSince[key] = nil
 				else
 					waitingTotal = waitingTotal + work.photos
 				end
 			end
 		end)
-		if not okColl then State.log('collection %s: %s', tostring(coll.localIdentifier), tostring(err)) end
+		if not okColl then
+			allRead = false
+			State.log('collection %s: %s', tostring(coll.localIdentifier), tostring(err))
+		end
 	end
 	State.outside = outside
 	if not State.nasOnline then return end -- the publish lost the NAS; keep its status
+	-- Only from a complete, current picture: a collection that failed to read must not unstar its
+	-- photos, and ids read before a publish may have changed (a moved photo); next cycle has them.
+	if allRead and not publishedNow then
+		local okStar, err = LrTasks.pcall(syncStarred, client, service, starred, scope, res.serverId)
+		if not okStar then State.log('starred folder: %s', tostring(err)) end
+	end
 
 	-- Add sidecar-edited RAWs only while you aren't editing, so the imports (which Lightroom
 	-- lists under Edit > Undo) don't get mixed up with your own changes.

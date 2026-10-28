@@ -135,6 +135,21 @@ function provider.sectionsForTopOfDialog(f, propertyTable)
 				},
 			},
 			f:row {
+				label 'Starred folder:',
+				f:popup_menu {
+					value = bind 'npStarredMin',
+					items = {
+						{ title = 'Off', value = 0 },
+						{ title = '1 star or more', value = 1 },
+						{ title = '2 stars or more', value = 2 },
+						{ title = '3 stars or more', value = 3 },
+						{ title = '4 stars or more', value = 4 },
+						{ title = '5 stars', value = 5 },
+					},
+				},
+				f:static_text { title = 'published photos with these ratings also go into starred/ on the NAS', size = 'small' },
+			},
+			f:row {
 				label '',
 				f:push_button {
 					title = 'Test Connection',

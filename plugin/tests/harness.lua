@@ -214,7 +214,7 @@ local W = {} -- photos, service, collections shared between scenarios
 local function serviceSettings()
 	return {
 		npNasUrl = NAS_URL, npToken = NAS_TOKEN, npSourceRoot = SRC, npAutoPublish = true,
-		npSettleSeconds = 60, npImportSidecars = true, npDefaultsApplied = true,
+		npSettleSeconds = 60, npImportSidecars = true, npDefaultsApplied = true, npStarredMin = 1,
 		LR_format = 'JPEG', LR_jpeg_quality = 0.9, LR_export_colorSpace = 'sRGB',
 		LR_size_doConstrain = false, LR_outputSharpeningOn = false,
 	}
@@ -738,6 +738,46 @@ scenario('21', 'Turning on HDR Output republishes instead of counting old JPEGs 
 	check(not record(W.smart, W.p2)._edited, 'and recorded')
 	W.service._settings.LR_enableHDRDisplay = false
 	W.service._settings.LR_maximumCompatibility = nil
+end)
+
+scenario('22', 'Starred photos are hard-linked into starred/ and follow rating changes', function()
+	SDK.advance(61)
+	cycle()
+	local function inode(rel)
+		local h = io.popen('ls -i ' .. string.format('%q', EXP .. '/' .. rel) .. ' 2>/dev/null')
+		local out = h:read('*a') or ''
+		h:close()
+		return out:match('^%s*(%d+)')
+	end
+	local id = record(W.smart, W.p2)._remoteId
+	check(id ~= nil and exportKind(id) == 'file', 'DSCF0002 is published', tostring(id))
+	W.p2._rating = 3
+	SDK.advance(31)
+	local renders = #SDK.renders
+	cycle()
+	local star = 'starred/' .. id:match('[^/]+$')
+	check(exportKind(star) == 'file', 'rating it 3 stars puts it in starred/', star)
+	check(inode(star) ~= nil and inode(star) == inode(id), 'as a hard link to the published JPEG (same file, no copy)')
+	check(#SDK.renders == renders, 'without rendering anything')
+	-- Re-edited: the published JPEG is replaced, and the starred copy follows.
+	SDK.edit(W.p2, { develop = { Exposure2012 = -1.7 } })
+	SDK.advance(61)
+	cycle()
+	check(exportFile(star) == exportFile(id) and inode(star) == inode(id), 'starred copy follows a republish')
+	-- Below the threshold: gone from starred/, still published.
+	W.service._settings.npStarredMin = 4
+	SDK.advance(31)
+	cycle()
+	check(not exportKind(star) and exportKind(id) == 'file', 'raising the threshold to 4 stars removes it from starred/ only')
+	W.service._settings.npStarredMin = 1
+	W.p2._rating = 5
+	SDK.advance(31)
+	cycle()
+	check(exportKind(star) == 'file', 'back in starred/ at 5 stars')
+	W.p2._rating = nil
+	SDK.advance(31)
+	cycle()
+	check(not exportKind(star), 'unrated: removed from starred/')
 end)
 
 scenario('15', 'The loop, the menu items, Init/Shutdown, the settings dialog', function()

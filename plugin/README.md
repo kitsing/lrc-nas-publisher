@@ -41,6 +41,10 @@ running on the NAS (see `../container/README.md`).
 - Edit a published photo and it is published again. Reset it, so that it leaves the smart
   collection, and its JPEG is deleted.
 - **Hand-picked** is an ordinary collection for photos you want on the NAS without editing them.
+- **Starred folder:** published photos rated at or above the service's *Starred folder* setting
+  (1 star by default; *Off* turns it off) also appear in `starred/` on the NAS, as one album.
+  Changing a rating updates it within about 30 seconds without re-rendering anything. Only
+  published photos (edited or hand-picked) count, and only while auto-publish is on.
 - Every 10 minutes, while you aren't editing, the plugin asks the NAS for RAWs whose `.xmp`
   sidecar has edits. It adds the ones your catalog lacks to the catalog, and to the **Added by NAS
   Publisher** collection, and Lightroom applies their sidecar edits. Each sidecar version is added
@@ -79,7 +83,7 @@ running on the NAS (see `../container/README.md`).
 ## Development
 
 The plugin is plain Lua 5.1. `tests/run_harness.sh` runs it on a fake Lightroom SDK
-(`tests/fake_lrsdk.lua`) against the real container in Docker: 22 scenarios covering settling,
+(`tests/fake_lrsdk.lua`) against the real container in Docker: 23 scenarios covering settling,
 republishing, removals, the NAS going away, wrong settings, smart-preview renders, sidecar
 imports, Unicode paths, and plugin reloads (including one mid-publish). The fake follows the documented SDK behavior; where the
 real SDK surprised us (`exportSession:photosToExport()` returns an iterator), the fake was fixed

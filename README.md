@@ -37,6 +37,8 @@ The export folder can then feed whatever comes next: Synology Photos, an album s
 - Never publishes a low-resolution smart-preview render if the share drops mid-publish.
 - Optionally adds RAWs with edited `.xmp` sidecars that aren't in the catalog yet, so edits made
   elsewhere get published too.
+- Keeps a flat `starred/` album of your starred photos (hard links, no extra space) that follows
+  rating changes within about 30 seconds.
 - No dialogs during automatic publishes. Problems show in **Library → Plug-in Extras → NAS
   Publisher: Status…**, in the plugin log, and on the container's status page.
 
@@ -54,7 +56,7 @@ Mac over SMB, and Docker on the NAS. Windows is untested and its paths aren't ha
 
 - `cd container && go test ./...`: the service.
 - `sh plugin/tests/run_harness.sh`: the plugin's Lua on a fake Lightroom SDK, against the real
-  container in Docker (22 scenarios).
+  container in Docker (23 scenarios).
 - `plugin/tests/*_test.lua`: unit tests, run with Lua 5.1.
 
 CI runs all three on every push.

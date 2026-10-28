@@ -52,6 +52,7 @@ type Config struct {
 	MaxUploadBytes int64         // MAX_UPLOAD_MB
 	RequireSource  bool          // REQUIRE_SOURCE: refuse JPEGs whose RAW isn't under SOURCE_DIR
 	Exclude        []string      // EXCLUDE: name patterns skipped by the sidecar scan
+	StarredDir     string        // STARRED_DIR: folder in EXPORT_DIR for starred photos; "" when off
 	OwnerUID       int           // PUID: owner for new files and folders (default: owner of EXPORT_DIR)
 	OwnerGID       int           // PGID
 }
@@ -64,6 +65,7 @@ func loadConfig() (Config, error) {
 		Listen:         envOr("LISTEN", ":8765"),
 		Token:          strings.TrimSpace(os.Getenv("TOKEN")),
 		RequireSource:  true,
+		StarredDir:     "starred",
 		Exclude:        splitList(envOr("EXCLUDE", "@*,#recycle,#snapshot,.*,*.lrlibrary,*.lrdata,*.photoslibrary,*.lrcat-data")),
 		OwnerUID:       -1,
 		OwnerGID:       -1,
@@ -88,6 +90,17 @@ func loadConfig() (Config, error) {
 	if v := os.Getenv("REQUIRE_SOURCE"); v != "" {
 		if cfg.RequireSource, err = strconv.ParseBool(v); err != nil {
 			return cfg, fmt.Errorf("REQUIRE_SOURCE=%q: want true or false", v)
+		}
+	}
+	if v, ok := os.LookupEnv("STARRED_DIR"); ok {
+		v = strings.TrimSpace(v)
+		switch {
+		case v == "" || strings.EqualFold(v, "off") || strings.EqualFold(v, "none"):
+			cfg.StarredDir = ""
+		case strings.ContainsAny(v, "/\\") || strings.HasPrefix(v, ".") || v == "..":
+			return cfg, fmt.Errorf("STARRED_DIR=%q: want a plain folder name", v)
+		default:
+			cfg.StarredDir = v
 		}
 	}
 	for _, e := range []struct {

@@ -186,14 +186,23 @@ func (a *App) handleUpload(w http.ResponseWriter, r *http.Request) {
 	a.store.event(kind, id, "from %s (%s)", source, humanBytes(size))
 	// The photo was published under another name before (it moved to another
 	// folder in Lightroom, or its virtual copy was renamed): remove the old JPEG,
-	// if this service wrote it for this same photo.
+	// if this service wrote it for this same photo. A starred photo stays starred.
+	_, starred := a.starred[id]
 	if prev, err := cleanRel(previousID); err == nil && prev != id {
 		if p, known := a.store.st.Photos[prev]; known && (p.UUID == "" || uuid == "" || p.UUID == uuid) {
+			if _, ok := a.starred[prev]; ok {
+				starred = true
+			}
 			if _, err := a.deleteLocked(prev, "replaced by "+id); err != nil {
 				a.store.event("error", prev, "removing the old JPEG: %v", err)
 			}
 		}
 	}
+	// A new version is a new file: link the starred folder's copy to it again.
+	if starred {
+		a.relinkStarred(id)
+	}
+	a.flushStarred()
 	if err := a.store.save(); err != nil {
 		logf("ERROR", "saving state: %v", err)
 	}
@@ -206,6 +215,10 @@ func (a *App) resolveUploadSource(rel string) (string, *uploadError) {
 	source, err := cleanRel(rel)
 	if err != nil {
 		return "", uploadErr(http.StatusBadRequest, fmt.Errorf("rel: %v", err))
+	}
+	if a.inStarredDir(source) {
+		return "", uploadErr(http.StatusConflict, fmt.Errorf(
+			"%s is in a RAW folder named like the starred folder (STARRED_DIR=%s); rename one of them", source, a.cfg.StarredDir))
 	}
 	if onDisk, ok := resolveSource(a.cfg.SourceDir, source); ok {
 		return onDisk, nil
@@ -375,6 +388,7 @@ func (a *App) handleDelete(w http.ResponseWriter, r *http.Request) {
 		}
 		results[id] = res
 	}
+	a.flushStarred()
 	if err := a.store.save(); err != nil {
 		logf("ERROR", "saving state: %v", err)
 	}
@@ -397,6 +411,7 @@ func (a *App) deleteLocked(id, why string) (string, error) {
 	fi, err := os.Lstat(full)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
+		a.unstarLocked(id)
 		delete(a.store.st.Photos, id)
 		return "missing", nil
 	case err != nil:
@@ -407,6 +422,9 @@ func (a *App) deleteLocked(id, why string) (string, error) {
 	}
 	if err := os.Remove(full); err != nil {
 		return "", err
+	}
+	if err := a.unstarLocked(id); err != nil {
+		a.starFailure(id, fmt.Sprintf("removing it from %s: %v", a.cfg.StarredDir, err))
 	}
 	delete(a.store.st.Photos, id)
 	a.store.event("deleted", id, "%s", why)

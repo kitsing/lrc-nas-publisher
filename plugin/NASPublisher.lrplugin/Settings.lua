@@ -13,6 +13,8 @@ Settings.fields = {
 	{ key = 'npAutoPublish', default = true },
 	{ key = 'npSettleSeconds', default = 60 },
 	{ key = 'npImportSidecars', default = true },
+	-- Published photos with at least this many stars also go into the NAS's starred folder; 0: off.
+	{ key = 'npStarredMin', default = 1 },
 	{ key = 'npDefaultsApplied', default = false },
 }
 

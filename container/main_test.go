@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -566,5 +567,242 @@ func TestHelloScansOnlyWhenAsked(t *testing.T) {
 	items := out["items"].([]any)
 	if len(items) != 1 || items[0].(map[string]any)["version"] == "" {
 		t.Fatalf("sidecar items: %v", items)
+	}
+}
+
+func TestStarredFolder(t *testing.T) {
+	e := newEnv(t, func(c *Config) { c.StarredDir = "starred" })
+	e.touch("a/DSCF0001.RAF", []byte("raw"), 0)
+	e.touch("b/DSCF0001.RAF", []byte("raw"), 0)
+	e.touch("a/DSCF0002.RAF", []byte("raw"), 0)
+	e.upload(map[string]string{"rel": "a/DSCF0001.RAF", "uuid": "u1"}, jpeg, testToken)
+	e.upload(map[string]string{"rel": "b/DSCF0001.RAF", "uuid": "u2"}, jpeg, testToken)
+	e.upload(map[string]string{"rel": "a/DSCF0002.RAF", "uuid": "u3"}, jpeg, testToken)
+	mine := []byte("a file the user put here")
+	must(t, os.MkdirAll(filepath.Join(e.export, "starred"), 0o755))
+	must(t, os.WriteFile(filepath.Join(e.export, "starred/DSCF0002.jpg"), mine, 0o644))
+
+	same := func(a, b string) bool {
+		fa, err1 := os.Stat(filepath.Join(e.export, a))
+		fb, err2 := os.Stat(filepath.Join(e.export, b))
+		return err1 == nil && err2 == nil && os.SameFile(fa, fb)
+	}
+	code, out := e.post("/api/starred", map[string]any{"ids": []string{"a/DSCF0001.jpg", "b/DSCF0001.jpg", "a/DSCF0002.jpg", "nope/X.jpg"}})
+	if code != 200 || out["linked"].(float64) != 3 || out["unknown"].(float64) != 1 {
+		t.Fatalf("starred: %d %v", code, out)
+	}
+	if !same("a/DSCF0001.jpg", "starred/DSCF0001.jpg") {
+		t.Fatal("starred/DSCF0001.jpg is not a hard link to a/DSCF0001.jpg")
+	}
+	// The same name from another folder, and a name a user file has, get a suffix.
+	entries, _ := os.ReadDir(filepath.Join(e.export, "starred"))
+	var names []string
+	for _, en := range entries {
+		names = append(names, en.Name())
+	}
+	if len(names) != 4 {
+		t.Fatalf("starred folder: %v", names)
+	}
+	if got, _ := os.ReadFile(filepath.Join(e.export, "starred/DSCF0002.jpg")); !bytes.Equal(got, mine) {
+		t.Fatal("the user's file in starred/ was replaced")
+	}
+
+	// A new version replaces the file: the starred link follows it.
+	newer := append(append([]byte{}, jpeg...), 'N')
+	e.upload(map[string]string{"rel": "a/DSCF0001.RAF", "uuid": "u1", "previousId": "a/DSCF0001.jpg"}, newer, testToken)
+	if got, _ := os.ReadFile(filepath.Join(e.export, "starred/DSCF0001.jpg")); !bytes.Equal(got, newer) || !same("a/DSCF0001.jpg", "starred/DSCF0001.jpg") {
+		t.Fatal("starred copy not updated after a republish")
+	}
+
+	// A move keeps it starred, under the new JPEG.
+	must(t, os.MkdirAll(filepath.Join(e.source, "c"), 0o755))
+	must(t, os.Rename(filepath.Join(e.source, "a/DSCF0001.RAF"), filepath.Join(e.source, "c/DSCF0001.RAF")))
+	e.upload(map[string]string{"rel": "c/DSCF0001.RAF", "uuid": "u1", "previousId": "a/DSCF0001.jpg"}, newer, testToken)
+	e.app.mu.Lock()
+	_, movedStarred := e.app.starred["c/DSCF0001.jpg"]
+	_, oldStarred := e.app.starred["a/DSCF0001.jpg"]
+	e.app.mu.Unlock()
+	if !movedStarred || oldStarred {
+		t.Fatal("starred status didn't follow the move")
+	}
+
+	// Unstarring removes the link; deleting a starred JPEG removes it too.
+	code, out = e.post("/api/starred", map[string]any{"ids": []string{"c/DSCF0001.jpg"}})
+	if code != 200 || out["unlinked"].(float64) != 2 {
+		t.Fatalf("unstar: %d %v", code, out)
+	}
+	e.post("/api/delete", map[string]any{"ids": []string{"c/DSCF0001.jpg"}})
+	entries, _ = os.ReadDir(filepath.Join(e.export, "starred"))
+	if len(entries) != 1 || entries[0].Name() != "DSCF0002.jpg" {
+		var left []string
+		for _, en := range entries {
+			left = append(left, en.Name())
+		}
+		t.Fatalf("starred folder after unstar and delete: %v", left)
+	}
+	if !e.exists("b/DSCF0001.jpg") {
+		t.Fatal("unstarring deleted the published JPEG")
+	}
+}
+
+func TestStarredFolderOffAndConflicts(t *testing.T) {
+	off := newEnv(t, nil) // StarredDir ""
+	off.touch("a/X.RAF", []byte("raw"), 0)
+	off.upload(map[string]string{"rel": "a/X.RAF"}, jpeg, testToken)
+	code, out := off.post("/api/starred", map[string]any{"ids": []string{"a/X.jpg"}})
+	if code != 200 || out["disabled"] != true || off.exists("starred") {
+		t.Fatalf("disabled: %d %v", code, out)
+	}
+	on := newEnv(t, func(c *Config) { c.StarredDir = "starred" })
+	on.touch("Starred/Y.RAF", []byte("raw"), 0)
+	if code, _ := on.upload(map[string]string{"rel": "Starred/Y.RAF"}, jpeg, testToken); code != http.StatusConflict {
+		t.Fatalf("RAW folder named like the starred folder: %d", code)
+	}
+}
+
+func TestStarredDirSetting(t *testing.T) {
+	for v, want := range map[string]string{"": "", "off": "", "Favorites": "Favorites"} {
+		t.Setenv("STARRED_DIR", v)
+		cfg, err := loadConfig()
+		if err != nil || cfg.StarredDir != want {
+			t.Errorf("STARRED_DIR=%q: %q, %v", v, cfg.StarredDir, err)
+		}
+	}
+	for _, bad := range []string{"a/b", ".hidden", ".."} {
+		t.Setenv("STARRED_DIR", bad)
+		if _, err := loadConfig(); err == nil {
+			t.Errorf("STARRED_DIR=%q accepted", bad)
+		}
+	}
+}
+
+// restart makes a new App over the same folders, as a container restart would.
+func (e *env) restart(tweak func(*Config)) {
+	e.t.Helper()
+	cfg := e.app.cfg
+	if tweak != nil {
+		tweak(&cfg)
+	}
+	app, err := newApp(cfg)
+	must(e.t, err)
+	app.uid, app.gid = -1, -1
+	e.app = app
+	e.srv.Close()
+	e.srv = httptest.NewServer(app.routes())
+}
+
+func (e *env) starredNames(dir string) []string {
+	e.t.Helper()
+	entries, _ := os.ReadDir(filepath.Join(e.export, dir))
+	var names []string
+	for _, en := range entries {
+		names = append(names, en.Name())
+	}
+	return names
+}
+
+func TestStarredSurvivesLostStateAndLeavesForeignFiles(t *testing.T) {
+	e := newEnv(t, func(c *Config) { c.StarredDir = "starred" })
+	e.touch("a/X.RAF", []byte("raw"), 0)
+	e.upload(map[string]string{"rel": "a/X.RAF", "uuid": "u1"}, jpeg, testToken)
+	e.post("/api/starred", map[string]any{"ids": []string{"a/X.jpg"}})
+
+	// state.json is lost; the starred record lives in the export folder and survives.
+	must(t, os.Remove(filepath.Join(e.config, "state.json")))
+	e.restart(nil)
+	newer := append(append([]byte{}, jpeg...), 'N')
+	e.upload(map[string]string{"rel": "a/X.RAF", "uuid": "u1", "previousId": "a/X.jpg"}, newer, testToken)
+	e.post("/api/starred", map[string]any{"ids": []string{"a/X.jpg"}})
+	if names := e.starredNames("starred"); len(names) != 1 || names[0] != "X.jpg" {
+		t.Fatalf("after losing state.json: %v", names)
+	}
+	if got, _ := os.ReadFile(filepath.Join(e.export, "starred/X.jpg")); !bytes.Equal(got, newer) {
+		t.Fatal("starred copy not following the republish after losing state.json")
+	}
+
+	// Someone saves their own version over the link: it is theirs now, never removed.
+	mine := []byte("edited in Preview")
+	must(t, os.Remove(filepath.Join(e.export, "starred/X.jpg")))
+	must(t, os.WriteFile(filepath.Join(e.export, "starred/X.jpg"), mine, 0o644))
+	e.post("/api/starred", map[string]any{"ids": []string{"a/X.jpg"}})
+	if got, _ := os.ReadFile(filepath.Join(e.export, "starred/X.jpg")); !bytes.Equal(got, mine) {
+		t.Fatal("a file someone replaced in starred/ was overwritten")
+	}
+	if names := e.starredNames("starred"); len(names) != 2 {
+		t.Fatalf("expected the user's file plus a newly named link: %v", names)
+	}
+	e.post("/api/starred", map[string]any{"ids": []string{}})
+	if names := e.starredNames("starred"); len(names) != 1 || names[0] != "X.jpg" {
+		t.Fatalf("after unstarring: %v", names)
+	}
+	if got, _ := os.ReadFile(filepath.Join(e.export, "starred/X.jpg")); !bytes.Equal(got, mine) {
+		t.Fatal("unstarring removed a file someone replaced")
+	}
+}
+
+func TestStarredFolderRenamedOrDisabled(t *testing.T) {
+	e := newEnv(t, func(c *Config) { c.StarredDir = "starred" })
+	e.touch("a/X.RAF", []byte("raw"), 0)
+	e.upload(map[string]string{"rel": "a/X.RAF"}, jpeg, testToken)
+	e.post("/api/starred", map[string]any{"ids": []string{"a/X.jpg"}})
+
+	e.restart(func(c *Config) { c.StarredDir = "Favorites" })
+	if names := e.starredNames("starred"); len(names) != 0 {
+		t.Fatalf("old folder not cleaned after renaming STARRED_DIR: %v", names)
+	}
+	e.post("/api/starred", map[string]any{"ids": []string{"a/X.jpg"}})
+	if names := e.starredNames("Favorites"); len(names) != 1 {
+		t.Fatalf("new folder: %v", names)
+	}
+
+	e.restart(func(c *Config) { c.StarredDir = "" })
+	if names := e.starredNames("Favorites"); len(names) != 0 {
+		t.Fatalf("links left after turning the starred folder off: %v", names)
+	}
+	if _, err := os.Stat(filepath.Join(e.export, starManifest)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("manifest left behind with nothing starred")
+	}
+	if !e.exists("a/X.jpg") {
+		t.Fatal("published JPEG removed")
+	}
+}
+
+func TestStarredCopyFallbackCopiesOnce(t *testing.T) {
+	e := newEnv(t, func(c *Config) { c.StarredDir = "starred" })
+	old := linkFile
+	linkFile = func(string, string) error { return errors.New("no hard links here") }
+	t.Cleanup(func() { linkFile = old })
+	e.touch("a/X.RAF", []byte("raw"), 0)
+	e.upload(map[string]string{"rel": "a/X.RAF", "uuid": "u1"}, jpeg, testToken)
+	_, out := e.post("/api/starred", map[string]any{"ids": []string{"a/X.jpg"}})
+	if out["linked"].(float64) != 1 {
+		t.Fatalf("first sync: %v", out)
+	}
+	_, out = e.post("/api/starred", map[string]any{"ids": []string{"a/X.jpg"}})
+	if out["linked"].(float64) != 0 {
+		t.Fatalf("an unchanged copy was copied again: %v", out)
+	}
+	time.Sleep(10 * time.Millisecond)
+	newer := append(append([]byte{}, jpeg...), 'N', 'N')
+	e.upload(map[string]string{"rel": "a/X.RAF", "uuid": "u1", "previousId": "a/X.jpg"}, newer, testToken)
+	if got, _ := os.ReadFile(filepath.Join(e.export, "starred/X.jpg")); !bytes.Equal(got, newer) {
+		t.Fatal("copy not refreshed after a republish")
+	}
+}
+
+func TestStarredScopeLeavesOtherCatalogsAlone(t *testing.T) {
+	e := newEnv(t, func(c *Config) { c.StarredDir = "starred" })
+	e.touch("a/A.RAF", []byte("raw"), 0)
+	e.touch("b/B.RAF", []byte("raw"), 0)
+	e.upload(map[string]string{"rel": "a/A.RAF"}, jpeg, testToken)
+	e.upload(map[string]string{"rel": "b/B.RAF"}, jpeg, testToken)
+	e.post("/api/starred", map[string]any{"ids": []string{"a/A.jpg", "b/B.jpg"}})
+	// Another catalog publishes only a/A.jpg and has nothing starred.
+	_, out := e.post("/api/starred", map[string]any{"ids": []string{}, "scope": []string{"a/A.jpg"}})
+	if out["unlinked"].(float64) != 1 {
+		t.Fatalf("scoped unstar: %v", out)
+	}
+	if names := e.starredNames("starred"); len(names) != 1 || names[0] != "B.jpg" {
+		t.Fatalf("a photo outside the sender's scope was unstarred: %v", names)
 	}
 }

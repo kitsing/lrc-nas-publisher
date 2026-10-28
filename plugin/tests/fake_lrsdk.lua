@@ -424,6 +424,7 @@ local RAW_KEYS = {
 	gps = function(p) return p._gps end,
 	croppedDimensions = function(p) return p._croppedDims or { width = 6000, height = 4000 } end,
 	dateTimeOriginal = function(p) return p._dateTimeOriginal end,
+	rating = function(p) return p._rating end,
 	fileName = function(p) return p._path:match('[^/]+$') end,
 }
 local FORMATTED_KEYS = {

@@ -45,7 +45,7 @@ td:first-child{white-space:nowrap;color:var(--muted)}
 <dt>Lightroom</dt><dd>{{if .Online}}<span class="ok">online</span>{{else}}<span class="muted">offline — nothing to do until it's back</span>{{end}}
  · last contact {{ago .LastSeen}}{{if .Host}} from {{.Host}}{{end}}{{if .PluginVersion}} (plugin {{.PluginVersion}}){{end}}</dd>
 {{if .Catalog}}<dt>Catalog</dt><dd>{{.Catalog}}</dd>{{end}}
-<dt>Published</dt><dd>{{.Published}} JPEGs</dd>
+<dt>Published</dt><dd>{{.Published}} JPEGs{{if .StarredDir}}, {{.Starred}} of them starred (in {{.StarredDir}}/){{end}}</dd>
 <dt>RAW folder</dt><dd>{{.SourceDir}}</dd>
 <dt>JPEG folder</dt><dd>{{.ExportDir}}</dd>
 <dt>Sidecar scan</dt><dd>{{if .Scan.Running}}running…{{else if .Scan.At.IsZero}}not yet (runs while Lightroom is online){{else}}{{ago .Scan.At}}: {{len .Scan.Items}} of {{.Scan.Raws}} RAWs have edited XMP sidecars{{end}}{{if .Scan.Err}} <span class="error">{{.Scan.Err}}</span>{{end}}</dd>
@@ -70,6 +70,7 @@ func (a *App) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"Online": a.isOnline(time.Now()), "LastSeen": a.online.at, "Host": a.online.host,
 		"PluginVersion": a.online.version, "Catalog": a.online.catalog,
 		"Published": len(a.store.st.Photos), "SourceDir": a.cfg.SourceDir, "ExportDir": a.cfg.ExportDir,
+		"Starred": len(a.starred), "StarredDir": a.cfg.StarredDir,
 		"Scan": scan, "Events": events, "Version": version,
 	}
 	a.mu.Unlock()

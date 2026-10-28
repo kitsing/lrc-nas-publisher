@@ -20,6 +20,15 @@ RAWs:
   suffix instead (`-raf`, `-nef`, …).
 - **Unchanged photos aren't re-sent:** each JPEG's edit fingerprint is stored. When Lightroom
   flags a photo as modified but nothing changed, the plugin skips rendering and uploading it.
+- **A starred album:** `/export/starred/` holds every published photo rated at or above the
+  plugin's *Starred folder* setting (1 star by default), in one flat folder that galleries show as
+  one album. Each file there is a hard link to the published JPEG: an ordinary file to every app,
+  using no extra space. Rating changes in Lightroom show up within about 30 seconds, with no
+  re-rendering; a republished photo's link follows the new version. Where hard links aren't
+  possible, copies are made instead. What the service put in that folder is recorded in
+  `/export/.lrc-starred.json` (by inode), so it survives a lost `state.json`, and files someone
+  else put there or replaced are never touched. Name clashes get a short suffix
+  (`DSCF0001-1a2b3c4d.jpg`).
 
 ## Set it up on a Synology (DSM 7.2+, Container Manager)
 
@@ -57,6 +66,7 @@ the same activity, plus whether Lightroom is online.
 | `MAX_UPLOAD_MB` | `1024` | Largest JPEG accepted. |
 | `REQUIRE_SOURCE` | `true` | Refuse JPEGs whose RAW isn't under `/source`. This catches a wrong "RAW folder on this Mac" setting in the plugin. |
 | `EXCLUDE` | `@*,#recycle,#snapshot,.*,*.lrlibrary,*.lrdata,*.photoslibrary,*.lrcat-data` | Names skipped by the sidecar scan. |
+| `STARRED_DIR` | `starred` | Folder in `/export` for starred photos; `off` turns it off. Renaming or turning it off removes the links the service made in the old folder at the next start. A RAW folder with the same name is refused. |
 | `PUID` / `PGID` | owner of `/export` | Owner given to new JPEGs and folders. |
 | `TOKEN` | contents of `/config/token` | Access token. If neither is set, a token is created in `/config/token`. |
 
@@ -68,6 +78,7 @@ the same activity, plus whether Lightroom is online.
 | `POST /api/photos` | One rendered JPEG (multipart). Answers with its id, its path under `/export`, which Lightroom stores. |
 | `POST /api/check` | Which photos are already published with the same edit fingerprint (skipped), and which RAWs the service can't find. |
 | `POST /api/delete` | Remove JPEGs by id, when photos leave the published collection. |
+| `POST /api/starred` | The starred ids (and the sender's scope: every id it publishes); the starred folder follows. |
 | `GET /api/sidecars` | RAWs with edited `.xmp` sidecars. Scans `/source` only while Lightroom is online. |
 | `GET /` | Status page (no token needed; shows file names, never photos or the token). |
 

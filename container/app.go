@@ -22,9 +22,12 @@ type App struct {
 	uid, gid int // owner for new files and folders; -1 leaves it alone
 	scanner  *Scanner
 
-	mu     sync.Mutex // guards store and online
-	store  *Store
-	online struct {
+	mu        sync.Mutex // guards store, online and the starred records
+	store     *Store
+	starred   map[string]*starEntry // see starred.go
+	starErr   map[string]string     // last starred-folder error per id, to log each only once
+	starDirty bool
+	online    struct {
 		at      time.Time
 		from    string // client address
 		host    string // Mac's name, as the plugin reports it
@@ -79,6 +82,9 @@ func newApp(cfg Config) (*App, error) {
 	if err := store.ensureServerID(); err != nil {
 		return nil, fmt.Errorf("saving state: %v", err)
 	}
+	if err := a.loadStarred(); err != nil {
+		return nil, err
+	}
 	return a, nil
 }
 
@@ -89,7 +95,7 @@ func removeParts(root string) int {
 		if err != nil {
 			return nil
 		}
-		if !d.IsDir() && strings.HasPrefix(d.Name(), partPrefix) && strings.HasSuffix(d.Name(), ".part") {
+		if !d.IsDir() && (strings.HasPrefix(d.Name(), partPrefix) || strings.HasPrefix(d.Name(), linkPrefix)) && strings.HasSuffix(d.Name(), ".part") {
 			if os.Remove(p) == nil {
 				n++
 			}
@@ -118,6 +124,7 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("POST /api/photos", a.auth(a.handleUpload))
 	mux.HandleFunc("POST /api/check", a.auth(a.handleCheck))
 	mux.HandleFunc("POST /api/delete", a.auth(a.handleDelete))
+	mux.HandleFunc("POST /api/starred", a.auth(a.handleStarred))
 	mux.HandleFunc("GET /api/sidecars", a.auth(a.handleSidecars))
 	return mux
 }
