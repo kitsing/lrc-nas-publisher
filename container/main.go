@@ -30,7 +30,7 @@ import (
 	_ "time/tzdata" // TZ works even without the OS time zone database
 )
 
-const version = "1.0.0"
+const version = "1.1.0"
 
 var logLocation = time.UTC
 var logMu sync.Mutex

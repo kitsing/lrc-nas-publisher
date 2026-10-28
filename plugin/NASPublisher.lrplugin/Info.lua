@@ -27,5 +27,5 @@ return {
 		{ title = 'NAS Publisher: Status…', file = 'MenuStatus.lua' },
 	},
 
-	VERSION = { major = 1, minor = 0, revision = 0, build = 1 },
+	VERSION = { major = 1, minor = 1, revision = 0, build = 1 },
 }

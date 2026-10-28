@@ -13,7 +13,7 @@ local logger = LrLogger('NASPublisher')
 logger:enable('logfile')
 
 local State = {
-	version = '1.0.0',
+	version = '1.1.0',
 	status = 'Starting…',
 	statusAt = nil,
 	nasOnline = false,
