@@ -17,10 +17,12 @@ import (
 )
 
 type App struct {
-	cfg      Config
-	token    string
-	uid, gid int // owner for new files and folders; -1 leaves it alone
-	scanner  *Scanner
+	cfg       Config
+	token     string
+	uid, gid  int // owner for new files and folders; -1 leaves it alone
+	scanner   *Scanner
+	immich    *Immich // nil when off
+	immichOff string  // why the Immich settings were ignored, if they were
 
 	mu        sync.Mutex // guards store, online and the starred records
 	store     *Store
@@ -84,6 +86,16 @@ func newApp(cfg Config) (*App, error) {
 	}
 	if err := a.loadStarred(); err != nil {
 		return nil, err
+	}
+	// A wrong Immich setting turns only that off: publishing goes on.
+	a.immich, err = newImmich(cfg.ImmichURL, cfg.ImmichAPIKey, cfg.ImmichLibrary, func(msg string) {
+		a.mu.Lock()
+		a.store.event("error", "Immich", "%s", msg)
+		a.mu.Unlock()
+	})
+	if err != nil {
+		a.immichOff = err.Error()
+		logf("WARNING", "Not asking Immich to scan: %v", err)
 	}
 	return a, nil
 }

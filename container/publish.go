@@ -184,6 +184,7 @@ func (a *App) handleUpload(w http.ResponseWriter, r *http.Request) {
 		kind = "updated"
 	}
 	a.store.event(kind, id, "from %s (%s)", source, humanBytes(size))
+	a.immich.changed()
 	// The photo was published under another name before (it moved to another
 	// folder in Lightroom, or its virtual copy was renamed): remove the old JPEG,
 	// if this service wrote it for this same photo. A starred photo stays starred.
@@ -465,6 +466,7 @@ func (a *App) deleteLocked(id, why string) (string, error) {
 	case errors.Is(err, os.ErrNotExist):
 		a.unstarLocked(id)
 		delete(a.store.st.Photos, id)
+		a.immich.changed() // Immich may still list it
 		return "missing", nil
 	case err != nil:
 		return "", err
@@ -480,6 +482,7 @@ func (a *App) deleteLocked(id, why string) (string, error) {
 	}
 	delete(a.store.st.Photos, id)
 	a.store.event("deleted", id, "%s", why)
+	a.immich.changed()
 	a.removeEmptyDirs(filepath.Dir(full))
 	return "deleted", nil
 }

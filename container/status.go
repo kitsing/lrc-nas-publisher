@@ -25,6 +25,12 @@ var statusTmpl = template.Must(template.New("status").Funcs(template.FuncMap{
 		return t.In(logLocation).Format("2006-01-02 15:04")
 	},
 	"when": func(t time.Time) string { return t.In(logLocation).Format("Jan 2 15:04:05") },
+	"until": func(t time.Time) string {
+		if d := time.Until(t).Round(time.Second); d > 0 {
+			return "in " + d.String()
+		}
+		return "now"
+	},
 }).Parse(`<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="refresh" content="30">
@@ -48,7 +54,9 @@ td:first-child{white-space:nowrap;color:var(--muted)}
 <dt>Published</dt><dd>{{.Published}} JPEGs{{if .StarredDir}}, {{.Starred}} of them starred (in {{.StarredDir}}/){{end}}</dd>
 <dt>RAW folder</dt><dd>{{.SourceDir}}</dd>
 <dt>JPEG folder</dt><dd>{{.ExportDir}}</dd>
-<dt>Sidecar scan</dt><dd>{{if .Scan.Running}}running…{{else if .Scan.At.IsZero}}not yet (runs while Lightroom is online){{else}}{{ago .Scan.At}}: {{len .Scan.Items}} of {{.Scan.Raws}} RAWs have edited XMP sidecars{{end}}{{if .Scan.Err}} <span class="error">{{.Scan.Err}}</span>{{end}}</dd>
+{{with .Immich}}<dt>Immich</dt><dd>{{if .Err}}<span class="error">{{.Err}}</span> · tried {{ago .Tried}}{{if not .Asked.IsZero}}; last scan asked for {{ago .Asked}}{{end}}{{else if .Asked.IsZero}}not asked to scan yet{{else}}asked to scan {{.Libraries}} {{ago .Asked}}{{end}}{{if not .Due.IsZero}} · next scan {{until .Due}}{{end}} <span class="muted">({{.URL}})</span></dd>
+{{else}}{{if .ImmichOff}}<dt>Immich</dt><dd><span class="error">off: {{.ImmichOff}}</span></dd>
+{{end}}{{end}}<dt>Sidecar scan</dt><dd>{{if .Scan.Running}}running…{{else if .Scan.At.IsZero}}not yet (runs while Lightroom is online){{else}}{{ago .Scan.At}}: {{len .Scan.Items}} of {{.Scan.Raws}} RAWs have edited XMP sidecars{{end}}{{if .Scan.Err}} <span class="error">{{.Scan.Err}}</span>{{end}}</dd>
 </dl>
 <h2>Recent activity</h2>
 {{if .Events}}<table>{{range .Events}}<tr><td>{{when .Time}}</td><td class="{{.Kind}}">{{.Kind}}</td><td>{{.ID}}{{if .Message}} <span class="muted">— {{.Message}}</span>{{end}}</td></tr>{{end}}</table>
@@ -71,7 +79,10 @@ func (a *App) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"PluginVersion": a.online.version, "Catalog": a.online.catalog,
 		"Published": len(a.store.st.Photos), "SourceDir": a.cfg.SourceDir, "ExportDir": a.cfg.ExportDir,
 		"Starred": len(a.starred), "StarredDir": a.cfg.StarredDir,
-		"Scan": scan, "Events": events, "Version": version,
+		"Scan": scan, "Events": events, "Version": version, "ImmichOff": a.immichOff,
+	}
+	if st := a.immich.snapshot(); st != nil {
+		data["Immich"] = st
 	}
 	a.mu.Unlock()
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")

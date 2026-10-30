@@ -18,6 +18,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/signal"
@@ -30,15 +31,16 @@ import (
 	_ "time/tzdata" // TZ works even without the OS time zone database
 )
 
-const version = "1.1.1"
+const version = "1.2.0"
 
 var logLocation = time.UTC
 var logMu sync.Mutex
+var logOut io.Writer = os.Stderr // tests read what's logged
 
 func logf(level, format string, args ...any) {
 	logMu.Lock()
 	defer logMu.Unlock()
-	fmt.Fprintf(os.Stderr, "%s %s %s\n", time.Now().In(logLocation).Format("2006-01-02 15:04:05"), level, fmt.Sprintf(format, args...))
+	fmt.Fprintf(logOut, "%s %s %s\n", time.Now().In(logLocation).Format("2006-01-02 15:04:05"), level, fmt.Sprintf(format, args...))
 }
 
 type Config struct {
@@ -55,6 +57,9 @@ type Config struct {
 	StarredDir     string        // STARRED_DIR: folder in EXPORT_DIR for starred photos; "" when off
 	OwnerUID       int           // PUID: owner for new files and folders (default: owner of EXPORT_DIR)
 	OwnerGID       int           // PGID
+	ImmichURL      string        // IMMICH_URL: ask this Immich to scan after JPEGs change; "" when off (see immich.go)
+	ImmichAPIKey   string        // IMMICH_API_KEY
+	ImmichLibrary  string        // IMMICH_LIBRARY_ID: the library to scan; "" for Immich's only one
 }
 
 func loadConfig() (Config, error) {
@@ -64,6 +69,9 @@ func loadConfig() (Config, error) {
 		ConfigDir:      envOr("CONFIG_DIR", "/config"),
 		Listen:         envOr("LISTEN", ":8765"),
 		Token:          strings.TrimSpace(os.Getenv("TOKEN")),
+		ImmichURL:      os.Getenv("IMMICH_URL"),
+		ImmichAPIKey:   os.Getenv("IMMICH_API_KEY"),
+		ImmichLibrary:  os.Getenv("IMMICH_LIBRARY_ID"),
 		RequireSource:  true,
 		StarredDir:     "starred",
 		Exclude:        splitList(envOr("EXCLUDE", "@*,#recycle,#snapshot,.*,*.lrlibrary,*.lrdata,*.photoslibrary,*.lrcat-data")),
@@ -233,8 +241,10 @@ func main() {
 		shutdown, cancel := context.WithTimeout(context.Background(), 50*time.Second)
 		defer cancel()
 		srv.Shutdown(shutdown)
+		app.immich.halt(6 * time.Second) // asks Immich for a scan still waiting
 	}()
 	logf("INFO", "lrc-nas-publisher %s listening on %s; RAWs in %s, JPEGs to %s", version, cfg.Listen, cfg.SourceDir, cfg.ExportDir)
+	app.immich.start()
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		logf("ERROR", "%v", err)
 		os.Exit(1)

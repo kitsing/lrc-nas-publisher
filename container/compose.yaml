@@ -9,7 +9,7 @@
 services:
   lrc-nas-publisher:
     build: .
-    image: local/lrc-nas-publisher:1.1.1  # a new tag, so Container Manager builds it
+    image: local/lrc-nas-publisher:1.2.0  # a new tag, so Container Manager builds it
     container_name: lrc-nas-publisher
     restart: unless-stopped
     stop_grace_period: 1m  # lets an upload in progress finish
@@ -24,6 +24,13 @@ services:
       # token (the plugin's access token, created on first start) and state.json (what's published).
       # The plugin finds the token over SMB, e.g. /Volumes/docker/projects/lrc-nas-publisher/config/token.
       - ./config:/config
+    # extra_hosts:  # with Immich on this same NAS: lets IMMICH_URL below use host.docker.internal
+    #   - host.docker.internal:host-gateway
     environment:
       TZ: UTC  # your time zone, e.g. America/Los_Angeles, for log and status times
       # SCAN_INTERVAL_MINUTES: "10"  # how often to look for edited XMP sidecars while Lightroom is online
+      # Immich (optional): ask Immich to scan its library of these JPEGs after each publish. See README.md.
+      # With Immich on this NAS, also uncomment extra_hosts above.
+      # IMMICH_URL: http://host.docker.internal:2283
+      # IMMICH_API_KEY: ""  # an Immich admin's API key with library.read and library.update
+      # IMMICH_LIBRARY_ID: ""  # only if Immich has more than one external library
